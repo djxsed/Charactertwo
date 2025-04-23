@@ -1,352 +1,439 @@
-import os
-import json
-import time
 import discord
 from discord.ext import commands
-from openai import OpenAI
+import os
 import aiosqlite
-from datetime import datetime, timezone  # UTC 시간 처리를 위해 필요
+import re
+from openai import OpenAI
 from dotenv import load_dotenv
-import asyncio
+from datetime import datetime, timedelta
 import hashlib
-import logging
+import uuid
+import asyncio
+from collections import deque
 
-# 로그 설정: 마치 일기 쓰듯이 프로그램이 뭘 했는지 기록해
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("batch_processor.log"),  # 로그를 파일에 저장
-        logging.StreamHandler()  # 터미널에도 출력
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# 환경 변수 불러오기: 비밀 정보(예: 비밀번호)를 안전하게 저장해둔 곳에서 가져와
+# 환경 변수 불러오기 (비밀 정보 보호)
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# OpenAI API 설정
+openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
-# OpenAI 클라이언트 초기화: OpenAI와 대화할 준비를 해
-try:
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY가 .env 파일에 없어!")
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    logger.info("OpenAI 클라이언트 초기화 성공")
-except Exception as e:
-    logger.error(f"OpenAI 클라이언트 초기화 실패: {str(e)}")
-    raise
-
-# 디스코드 봇 설정: 디스코드에서 메시지를 보내고 받을 준비를 해
+# 봇 설정
 intents = discord.Intents.default()
 intents.guilds = True
+intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# 로그 채널 ID: 오류나 결과를 기록할 디스코드 채널
-LOG_CHANNEL_ID = 1358060156742533231  # 너의 서버 로그 채널 ID로 바꿔!
+# 상수 정의 (설정값들)
+BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
+MIN_LENGTH = 50
+REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
+ALLOWED_RACES = ["인간", "마법사", "A.M.L", "요괴"]
+ALLOWED_ROLES = ["학생", "선생", "A.M.L"]
+LOG_CHANNEL_ID = 1358060156742533231
+COOLDOWN_SECONDS = 5
+MAX_REQUESTS_PER_DAY = 1000
 
-# 허용된 역할: 캐릭터가 가질 수 있는 역할 목록
-ALLOWED_ROLES = ["학생", "선생님", "A.M.L"]
+# 숫자 속성 체크용 정규 표현식
+NUMBER_PATTERN = r"\b(체력|지능|이동속도|힘)\s*:\s*([1-6])\b|\b냉철\s*:\s*([1-4])\b|\[\w+\]\s*\((\d)\)"
+AGE_PATTERN = r"나이:\s*(\d+)"
 
-async def get_pending_tasks():
-    """대기 중인 작업을 데이터베이스에서 가져와. 마치 할 일 목록을 확인하는 거야!"""
-    try:
-        async with aiosqlite.connect("characters.db") as db:
-            async with db.execute("""
-                SELECT task_id, character_id, description, user_id, channel_id, thread_id, type, prompt
-                FROM flex_tasks WHERE status = 'pending' LIMIT 50
-            """) as cursor:
-                tasks = await cursor.fetchall()
-                logger.info(f"가져온 대기 중인 작업 수: {len(tasks)}")
-                return tasks
-    except Exception as e:
-        logger.error(f"작업 가져오기 실패: {str(e)}")
-        return []
+# Flex 작업 큐
+flex_queue = deque()
 
-async def update_task_status(task_id: str, status: str, result: dict = None):
-    """작업 상태를 업데이트해. 예: '대기 중' -> '처리 중' -> '완료'"""
-    try:
-        async with aiosqlite.connect("characters.db") as db:
-            if result:
-                await db.execute(
-                    "UPDATE flex_tasks SET status = ?, result = ? WHERE task_id = ?",
-                    (status, json.dumps(result), task_id)
-                )
-            else:
-                await db.execute(
-                    "UPDATE flex_tasks SET status = ? WHERE task_id = ?",
-                    (status, task_id)
-                )
-            await db.commit()
-            logger.info(f"작업 상태 업데이트: task_id={task_id}, status={status}")
-    except Exception as e:
-        logger.error(f"작업 상태 업데이트 실패: task_id={task_id}, error={str(e)}")
-
-async def save_character_result(character_id: str, description: str, pass_status: bool, reason: str, role_name: str):
-    """캐릭터 심사 결과를 데이터베이스에 저장해. 마치 시험 결과를 기록하는 거야!"""
-    try:
-        description_hash = hashlib.md5(description.encode()).hexdigest()
-        timestamp = datetime.now(timezone.UTC).isoformat()
-        async with aiosqlite.connect("characters.db") as db:
-            await db.execute(
-                """
-                INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (character_id, description_hash, pass_status, reason, role_name, timestamp)
+# 데이터베이스 초기화
+async def init_db():
+    async with aiosqlite.connect("characters.db") as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS results (
+                character_id TEXT PRIMARY KEY,
+                description_hash TEXT,
+                pass BOOLEAN,
+                reason TEXT,
+                role_name TEXT,
+                timestamp TEXT
             )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS cooldowns (
+                user_id TEXT PRIMARY KEY,
+                last_request TEXT,
+                request_count INTEGER,
+                reset_date TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS flex_tasks (
+                task_id TEXT PRIMARY KEY,
+                character_id TEXT,
+                description TEXT,
+                user_id TEXT,
+                channel_id TEXT,
+                thread_id TEXT,
+                type TEXT,
+                prompt TEXT,
+                status TEXT,
+                created_at TEXT
+            )
+        """)
+        await db.commit()
+
+# 캐릭터 심사 결과 저장
+async def save_result(character_id, description, pass_status, reason, role_name):
+    description_hash = hashlib.md5(description.encode()).hexdigest()
+    timestamp = datetime.utcnow().isoformat()
+    async with aiosqlite.connect("characters.db") as db:
+        await db.execute("""
+            INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (character_id, description_hash, pass_status, reason, role_name, timestamp))
+        await db.commit()
+
+# Flex 작업 큐에 추가
+async def queue_flex_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
+    task_id = str(uuid.uuid4())
+    created_at = datetime.utcnow().isoformat()
+    async with aiosqlite.connect("characters.db") as db:
+        await db.execute("""
+            INSERT INTO flex_tasks (task_id, character_id, description, user_id, channel_id, thread_id, type, prompt, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (task_id, character_id, description, user_id, channel_id, thread_id, task_type, prompt, "pending", created_at))
+        await db.commit()
+    flex_queue.append(task_id)
+    return task_id
+
+# 캐릭터 심사 결과 조회
+async def get_result(description):
+    description_hash = hashlib.md5(description.encode()).hexdigest()
+    async with aiosqlite.connect("characters.db") as db:
+        async with db.execute("SELECT pass, reason, role_name FROM results WHERE description_hash = ?", (description_hash,)) as cursor:
+            return await cursor.fetchone()
+
+# 쿨다운 및 요청 횟수 체크
+async def check_cooldown(user_id):
+    now = datetime.utcnow()
+    async with aiosqlite.connect("characters.db") as db:
+        async with db.execute("SELECT last_request, request_count, reset_date FROM cooldowns WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row:
+                await db.execute("INSERT INTO cooldowns (user_id, last_request, request_count, reset_date) VALUES (?, ?, ?, ?)",
+                                 (user_id, now.isoformat(), 1, now.date().isoformat()))
+                await db.commit()
+                return True, ""
+            
+            last_request, request_count, reset_date = row
+            last_request = datetime.fromisoformat(last_request)
+            reset_date = datetime.fromisoformat(reset_date).date()
+
+            if reset_date < now.date():
+                await db.execute("UPDATE cooldowns SET request_count = 0, reset_date = ? WHERE user_id = ?",
+                                 (now.date().isoformat(), user_id))
+                request_count = 0
+
+            if request_count >= MAX_REQUESTS_PER_DAY:
+                return False, f"❌ 하루에 너무 많이 요청했어! 최대 {MAX_REQUESTS_PER_DAY}번이야~ 내일 다시 와! 😊"
+
+            if (now - last_request).total_seconds() < COOLDOWN_SECONDS:
+                return False, f"❌ 아직 {COOLDOWN_SECONDS}초 더 기다려야 해! 잠시 쉬어~ 😅"
+
+            await db.execute("UPDATE cooldowns SET last_request = ?, request_count = ? WHERE user_id = ?",
+                             (now.isoformat(), request_count + 1, user_id))
             await db.commit()
-            logger.info(f"캐릭터 심사 결과 저장: character_id={character_id}, pass={pass_status}")
-    except Exception as e:
-        logger.error(f"캐릭터 결과 저장 실패: character_id={character_id}, error={str(e)}")
+            return True, ""
 
-async def send_discord_message(channel_id: str, thread_id: str, user_id: str, message: str):
-    """디스코드에 메시지를 보내. 마치 친구한테 문자 보내는 것 같아!"""
-    try:
-        channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
-        if not channel:
-            raise ValueError(f"채널을 찾을 수 없음: channel_id={channel_id}")
+# 캐릭터 설명 검증
+async def validate_character(description):
+    if len(description) < MIN_LENGTH:
+        return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
 
-        if thread_id:
-            thread = channel.get_thread(int(thread_id)) or await bot.fetch_channel(int(thread_id))
-            if not thread:
-                raise ValueError(f"스레드를 찾을 수 없음: thread_id={thread_id}")
-            await thread.send(f"<@{user_id}> {message}")
-            logger.info(f"스레드에 메시지 전송: thread_id={thread_id}, user_id={user_id}")
-        else:
-            await channel.send(f"<@{user_id}> {message}")
-            logger.info(f"채널에 메시지 전송: channel_id={channel_id}, user_id={user_id}")
-    except Exception as e:
-        logger.error(f"디스코드 메시지 전송 실패: channel_id={channel_id}, thread_id={thread_id}, error={str(e)}")
-        log_channel = bot.get_channel(LOG_CHANNEL_ID)
-        if log_channel:
-            try:
-                await log_channel.send(f"디스코드 메시지 전송 오류: {str(e)}")
-            except Exception as log_error:
-                logger.error(f"로그 채널 메시지 전송 실패: {str(log_error)}")
+    missing_fields = [field for field in REQUIRED_FIELDS if field not in description]
+    if missing_fields:
+        return False, f"❌ {', '.join(missing_fields)}가 빠졌어! 꼭 넣어줘~ 🧐"
 
-def create_jsonl_file(tasks: list, filename: str):
-    """작업을 OpenAI Batch API용 파일로 만들어. 마치 편지 봉투에 내용물을 넣는 거야!"""
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            for task in tasks:
-                task_id, _, _, _, _, _, task_type, prompt = task
-                request = {
-                    "custom_id": task_id,
-                    "method": "POST",
-                    "url": "/v1/chat/completions",
-                    "body": {
-                        "model": "gpt-4.1-mini",
-                        "messages": [
-                            {"role": "system", "content": "You are a Discord bot for character review."},
-                            {"role": "user", "content": prompt}
-                        ],
-                        "max_tokens": 150
-                    }
-                }
-                f.write(json.dumps(request) + "\n")
-        logger.info(f".jsonl 파일 생성: {filename}")
-    except Exception as e:
-        logger.error(f".jsonl 파일 생성 실패: {str(e)}")
-        raise
+    found_banned_words = [word for word in BANNED_WORDS if word in description]
+    if found_banned_words:
+        return False, f"❌ 금지된 단어 {', '.join(found_banned_words)}가 있어! 규칙 지켜줘~ 😅"
 
-async def process_batch():
-    """작업을 처리하는 메인 함수야. 마치 공장에서 물건을 만드는 기계 같아!"""
-    logger.info("Batch 처리 시작")
+    age_match = re.search(AGE_PATTERN, description)
+    if age_match:
+        age = int(age_match.group(1))
+        if not (1 <= age <= 5000):
+            return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줘~ 🕰️"
+    else:
+        return False, "❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
+
+    matches = re.findall(NUMBER_PATTERN, description)
+    for match in matches:
+        if match[1]:
+            value = int(match[1])
+            if not (1 <= value <= 6):
+                return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
+        elif match[2]:
+            value = int(match[2])
+            if not (1 <= value <= 4):
+                return False, f"❌ 냉철이 {value}? 1~4로 해줘~ 🧠"
+        elif match[3]:
+            value = int(match[3])
+            if not (1 <= value <= 5):
+                return False, f"❌ 기술/마법 위력이 {value}? 1~5로 해줘~ 🔥"
+
+    return True, ""
+
+# Flex 작업 처리
+async def process_flex_queue():
     while True:
-        try:
-            # 대기 중인 작업 가져오기
-            tasks = await get_pending_tasks()
-            if not tasks:
-                logger.info("대기 중인 작업이 없습니다. 30초 대기...")
-                await asyncio.sleep(30)
-                continue
-
-            # .jsonl 파일 생성
-            jsonl_filename = f"batch_{int(time.time())}.jsonl"
-            create_jsonl_file(tasks, jsonl_filename)
-
-            try:
-                # OpenAI Batch API에 파일 업로드
-                with open(jsonl_filename, "rb") as f:
-                    file_response = openai_client.files.create(file=f, purpose="batch")
-                file_id = file_response.id
-                logger.info(f"파일 업로드 성공: file_id={file_id}")
-
-                # Batch 작업 생성
-                batch_response = openai_client.batches.create(
-                    input_file_id=file_id,
-                    endpoint="/v1/chat/completions",
-                    completion_window="24h",
-                    metadata={"description": "Character review batch"}
-                )
-                batch_id = batch_response.id
-                logger.info(f"Batch 작업 생성: batch_id={batch_id}")
-
-                # 작업 상태를 'processing'으로 업데이트
-                for task in tasks:
-                    task_id = task[0]
-                    await update_task_status(task_id, "processing")
-
-                # Batch 작업 상태 확인
-                while True:
-                    batch_status = openai_client.batches.retrieve(batch_id)
-                    logger.info(f"Batch 상태: batch_id={batch_id}, status={batch_status.status}")
-                    if batch_status.status in ["completed", "failed"]:
-                        break
-                    await asyncio.sleep(15)
-
-                if batch_status.status == "failed":
-                    logger.error(f"Batch 실패: batch_id={batch_id}, errors={batch_status.errors}")
-                    for task in tasks:
-                        task_id, _, _, user_id, channel_id, thread_id, task_type, _ = task
-                        await update_task_status(task_id, "failed", {"error": "Batch 작업 실패"})
-                        await send_discord_message(
-                            channel_id, thread_id, user_id,
-                            f"❌ 앗, Batch 처리 중 오류가 났어... 다시 시도해줄래? 🥺"
-                        )
-                    continue
-
-                # 결과 가져오기
-                output_file_id = batch_status.output_file_id
-                output_content = openai_client.files.content(output_file_id).text
-                results = [json.loads(line) for line in output_content.splitlines()]
-                logger.info(f"Batch 결과 가져옴: {len(results)}개 작업")
-
-                # 결과 처리
-                for result in results:
-                    task_id = result["custom_id"]
-                    task = next((t for t in tasks if t[0] == task_id), None)
+        if flex_queue:
+            task_id = flex_queue.popleft()
+            async with aiosqlite.connect("characters.db") as db:
+                async with db.execute("SELECT * FROM flex_tasks WHERE task_id = ?", (task_id,)) as cursor:
+                    task = await cursor.fetchone()
                     if not task:
-                        logger.warning(f"작업을 찾을 수 없음: task_id={task_id}")
                         continue
 
-                    _, character_id, description, user_id, channel_id, thread_id, task_type, _ = task
+                    task_id, character_id, description, user_id, channel_id, thread_id, task_type, prompt, status, created_at = task
 
-                    if "error" in result:
-                        error_message = result["error"]["message"]
-                        logger.error(f"작업 오류: task_id={task_id}, error={error_message}")
-                        await update_task_status(task_id, "failed", {"error": error_message})
-                        if task_type == "character_check":
-                            await save_character_result(character_id, description, False, f"오류: {error_message}", None)
-                            await send_discord_message(
-                                channel_id, thread_id, user_id,
-                                f"❌ 앗, 심사 중 오류가 났어: {error_message} 😓"
-                            )
-                        else:
-                            await send_discord_message(
-                                channel_id, thread_id, user_id,
-                                f"❌ 앗, 피드백 처리 중 오류: {error_message} 😓"
-                            )
+                    if status != "pending":
                         continue
 
-                    response = result["response"]["body"]["choices"][0]["message"]["content"]
-                    await update_task_status(task_id, "completed", {"response": response})
-                    logger.info(f"작업 완료: task_id={task_id}, response={response}")
+                    try:
+                        response = openai_client.chat.completions.create(
+                            model="gpt-4.1-nano",
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=50 
+                        )
+                        result = response.choices[0].message.content.strip()
+                        pass_status = result.startswith("✅")
+                        role_name = result.split("역할: ")[1] if pass_status else None
+                        reason = result[2:] if not pass_status else "통과"
 
-                    if task_type == "character_check":
-                        pass_status = "✅" in response
-                        role_name = None
-                        reason = response.replace("✅", "").replace("❌", "").strip()
+                        await save_result(character_id, description, pass_status, reason, role_name)
 
-                        if pass_status:
-                            for role in ALLOWED_ROLES:
-                                if f"역할: {role}" in response:
-                                    role_name = role
-                                    break
-                            if not role_name:
-                                await save_character_result(character_id, description, False, "유효한 역할 없음", None)
-                                message = "❌ 앗, 유효한 역할이 없네! 학생, 선생님, A.M.L 중 하나로 설정해줘~ 😊"
-                            else:
-                                await save_character_result(character_id, description, True, "통과", role_name)
-                                message = f"🎉 우와, 대단해! 통과했어~ 역할: {role_name} 🎊"
-                        else:
-                            await save_character_result(character_id, description, False, reason, None)
-                            message = f"❌ 아쉽게도... {reason} 다시 수정해서 도전해봐! 내가 응원할게~ 💪"
-
-                        if pass_status and role_name:
-                            try:
-                                # 서버 ID는 채널 ID에서 추정
-                                guild_id = int(channel_id.split("-")[0]) if "-" in channel_id else int(channel_id)
-                                guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
-                                if guild:
-                                    member = await guild.fetch_member(int(user_id))
-                                    role = discord.utils.get(guild.roles, name=role_name)
-                                    if role:
+                        thread = bot.get_channel(int(thread_id))
+                        if thread:
+                            guild = thread.guild
+                            member = guild.get_member(int(user_id))
+                            if pass_status and role_name:
+                                role = discord.utils.get(guild.roles, name=role_name)
+                                if role:
+                                    try:
                                         await member.add_roles(role)
-                                        message += f" (역할 `{role_name}`도 멋지게 부여했어! 😎)"
-                                    else:
-                                        message += f" (역할 `{role_name}`이 서버에 없네... 관리자한테 물어볼까? 🤔)"
+                                        result += f" (역할 `{role_name}` 부여했어! 😊)"
+                                    except discord.Forbidden:
+                                        result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
                                 else:
-                                    message += " (서버를 찾을 수 없어... 🥺)"
-                            except Exception as e:
-                                message += f" (역할 부여 실패: {str(e)} 🥺)"
-                                logger.error(f"역할 부여 실패: user_id={user_id}, role={role_name}, error={str(e)}")
+                                    result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+                            await thread.send(f"{member.mention} {result}")
 
-                        await send_discord_message(channel_id, thread_id, user_id, message)
-                    else:  # 피드백 처리
-                        if "너무 높습니다" in response:
-                            response = response.replace("너무 높습니다", "너무 쎄서 내가 깜짝 놀랐잖아! 😲 조금만 낮춰줄래?")
-                        elif "규칙에 맞지 않습니다" in response:
-                            response = response.replace("규칙에 맞지 않습니다", "규칙이랑 안 맞네~ 🤔 다시 한 번 체크해볼까?")
-                        await send_discord_message(channel_id, thread_id, user_id, f"💬 {response}")
+                        await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("completed", task_id))
+                        await db.commit()
 
-                # 로그 채널에 완료 기록
-                log_channel = bot.get_channel(LOG_CHANNEL_ID)
-                if log_channel:
-                    try:
-                        await log_channel.send(f"Batch {batch_id} 완료: {len(results)}개 작업 처리")
-                        logger.info(f"Batch 완료 로그 전송: batch_id={batch_id}")
+                        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+                        if log_channel:
+                            await log_channel.send(f"캐릭터 심사 완료\n유저: {member}\n결과: {result}")
+
                     except Exception as e:
-                        logger.error(f"Batch 완료 로그 전송 실패: {str(e)}")
+                        await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None)
+                        if thread:
+                            await thread.send(f"❌ 앗, 심사 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹")
+                        await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("failed", task_id))
+                        await db.commit()
+        await asyncio.sleep(1)
 
-            except Exception as e:
-                logger.error(f"Batch 처리 중 오류: {str(e)}")
-                for task in tasks:
-                    task_id, _, _, user_id, channel_id, thread_id, task_type, _ = task
-                    await update_task_status(task_id, "failed", {"error": str(e)})
-                    await send_discord_message(
-                        channel_id, thread_id, user_id,
-                        f"❌ 앗, 처리 중 오류가 났어: {str(e)} 다시 시도해줄래? 🥺"
-                    )
-                log_channel = bot.get_channel(LOG_CHANNEL_ID)
-                if log_channel:
-                    try:
-                        await log_channel.send(f"Batch 처리 오류: {str(e)}")
-                    except Exception as log_error:
-                        logger.error(f"Batch 오류 로그 전송 실패: {str(log_error)}")
+# 캐릭터 심사 로직
+async def check_character(description, member, guild, thread):
+    print(f"캐릭터 검사 시작: {member.name}")
+    try:
+        cached_result = await get_result(description)
+        if cached_result:
+            pass_status, reason, role_name = cached_result
+            if pass_status:
+                result = f"🎉 이미 통과된 캐릭터야~ 역할: {role_name} 🎊"
+                if role_name:
+                    role = discord.utils.get(guild.roles, name=role_name)
+                    if role:
+                        try:
+                            await member.add_roles(role)
+                            result += f" (역할 `{role_name}` 부여했어! 😊)"
+                        except discord.Forbidden:
+                            result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                    else:
+                        result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+            else:
+                result = f"❌ 이전에 실패했어... 이유: {reason} 다시 수정해봐! 💪"
+            return result
 
-            finally:
-                # .jsonl 파일 삭제
-                if os.path.exists(jsonl_filename):
-                    try:
-                        os.remove(jsonl_filename)
-                        logger.info(f".jsonl 파일 삭제: {jsonl_filename}")
-                    except Exception as e:
-                        logger.error(f".jsonl 파일 삭제 실패: {str(e)}")
+        is_valid, error_message = await validate_character(description)
+        if not is_valid:
+            await save_result(str(thread.id), description, False, error_message, None)
+            return error_message
 
+        # 프롬프트에 "간결하게" 지침 추가
+        prompt = f"""
+        디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
+        1. 서버 규칙에 맞는지 판단해.
+        2. 캐릭터가 학생, 선생님, A.M.L인지 정해.
+        **간결하게 50자 이내로 답변해!**
+
+        **규칙**:
+        - 금지 단어: {', '.join(BANNED_WORDS)} (이미 확인됨).
+        - 필수 항목: {', '.join(REQUIRED_FIELDS)} (이미 확인됨).
+        - 허용 종족: {', '.join(ALLOWED_RACES)}.
+        - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
+        - 설명은 현실적이고 역할극에 적합해야 해.
+        - 시간/현실 조작 능력 금지.
+        - 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
+        - 나이: 1~5000살 (이미 확인됨).
+        - 소속: A.M.L, 하람고, 하람고등학교만 허용 (동아리 제외).
+        - 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~16, 마법사 5~17, 요괴 5~18.
+        - 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
+        - 기술/마법/요력: 시간, 범위, 위력 등이 명확해야 하고 너무 크면 안 돼. (예: 18초, 50m, 5).
+
+        **학생/선생님/A.M.L 판단 (이 순서대로 엄격히 확인)**:
+        1. 소속에 'AML' 또는 'A.M.L'이 포함되면 A.M.L로 판단.
+        2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생으로 판단.
+        3. 소속에 '학생'이 적혀있다면 학생으로 판단.
+        4. 위 조건에 해당되지 않으면 실패.
+
+        **주의**:
+        - A.M.L이나 선생 조건이 충족되면 학생으로 판단하지 마.
+        - 역할은 반드시 학생, 선생, A.M.L 중 하나만 선택.
+        - 역할 판단이 모호하면 실패 처리.
+
+        **캐릭터 설명**:
+        {description}
+
+        **응답 형식**:
+        - 통과: "✅ 역할: [학생|선생|A.M.L]"
+        - 실패: "❌ [실패 이유]"
+        """
+        try:
+            await queue_flex_task(str(thread.id), description, str(member.id), str(thread.parent.id), str(thread.id), "character_check", prompt)
+            return "⏳ 캐릭터 심사 중이야! 곧 결과 알려줄게~ 😊"
         except Exception as e:
-            logger.error(f"Batch 처리 루프 오류: {str(e)}")
-            await asyncio.sleep(60)
+            await save_result(str(thread.id), description, False, f"큐 오류: {str(e)}", None)
+            return f"❌ 앗, 심사 요청 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹"
+
+    except Exception as e:
+        await save_result(str(thread.id), description, False, f"오류: {str(e)}", None)
+        return f"❌ 앗, 오류가 났어... {str(e)} 나중에 다시 시도해! 🥹"
+
+# 최근 캐릭터 설명 찾기
+async def find_recent_character_description(channel, user):
+    if isinstance(channel, discord.Thread):
+        try:
+            messages = [message async for message in channel.history(limit=1, oldest_first=True)]
+            if messages and messages[0].author == user and not messages[0].content.startswith("/"):
+                return messages[0].content
+        except discord.Forbidden:
+            return None
+        channel = channel.parent
+
+    try:
+        async for message in channel.history(limit=100):
+            if message.author == user and not message.content.startswith("/") and len(message.content) >= MIN_LENGTH:
+                if all(field in message.content for field in REQUIRED_FIELDS):
+                    return message.content
+    except discord.Forbidden:
+        return None
+    return None
 
 @bot.event
 async def on_ready():
-    """봇이 디스코드에 연결되면 실행돼"""
-    logger.info(f'Batch 처리자 봇 로그인됨: {bot.user}')
-    try:
-        await process_batch()
-    except Exception as e:
-        logger.error(f"Batch 처리 시작 실패: {str(e)}")
-        raise
+    await init_db()
+    print(f'봇이 로그인했어: {bot.user}')
+    await bot.tree.sync()
+    bot.loop.create_task(process_flex_queue())
 
-if __name__ == "__main__":
-    """프로그램을 시작하는 부분이야"""
-    logger.info("Batch Processor 스크립트 시작")
+@bot.event
+async def on_thread_create(thread):
+    print(f"새 스레드: {thread.name} (부모: {thread.parent.name})")
+    if thread.parent.name == "입학-신청서" and not thread.owner.bot:
+        try:
+            bot_member = thread.guild.me
+            permissions = thread.permissions_for(bot_member)
+            if not permissions.send_messages or not permissions.read_message_history:
+                await thread.send("❌ 권한이 없어! 서버 관리자한테 물어봐~ 🥺")
+                return
+
+            messages = [message async for message in thread.history(limit=1, oldest_first=True)]
+            if not messages or messages[0].author.bot:
+                await thread.send("❌ 첫 메시지를 못 찾았어! 다시 올려줘~ 🤔")
+                return
+
+            message = messages[0]
+            can_proceed, error_message = await check_cooldown(str(message.author.id))
+            if not can_proceed:
+                await thread.send(f"{message.author.mention} {error_message}")
+                return
+
+            result = await check_character(message.content, message.author, message.guild, thread)
+            await thread.send(f"{message.author.mention} {result}")
+
+        except Exception as e:
+            await thread.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+            log_channel = bot.get_channel(LOG_CHANNEL_ID)
+            if log_channel:
+                await log_channel.send(f"오류: {str(e)}")
+
+# 피드백 명령어
+@bot.tree.command(name="피드백", description="심사 결과에 대해 질문해! 예: /피드백 왜 안된거야?")
+async def feedback(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
     try:
-        if not DISCORD_TOKEN:
-            raise ValueError("DISCORD_TOKEN이 .env 파일에 없어!")
-        bot.run(DISCORD_TOKEN)
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        description = await find_recent_character_description(interaction.channel, interaction.user)
+        if not description:
+            await interaction.followup.send("❌ 최근 캐릭터 설명을 못 찾았어! 먼저 올려줘~ 😊")
+            return
+
+        cached_result = await get_result(description)
+        if not cached_result:
+            await interaction.followup.send("❌ 심사 결과를 못 찾았어! 먼저 심사해줘~ 🤔")
+            return
+
+        pass_status, reason, role_name = cached_result
+        # 피드백 프롬프트에도 "간결하게" 지침 추가
+        prompt = f"""
+        캐릭터 설명: {description}
+        심사 결과: {'통과' if pass_status else '실패'}, 이유: {reason}
+        사용자 질문: {question}
+        50자 이내로 간단히 답변해. 말투는 친근하고 재밌게.
+        통과인지 탈락인지 여부부터 설명.
+        """
+        task_id = await queue_flex_task(None, description, str(interaction.user.id), str(interaction.channel.id), None, "feedback", prompt)
+        await interaction.followup.send("⏳ 피드백 처리 중이야! 곧 알려줄게~ 😊")
+
     except Exception as e:
-        logger.error(f"디스코드 봇 실행 실패: {str(e)}")
-        raise
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# 재검사 명령어
+@bot.tree.command(name="재검사", description="최근 캐릭터로 다시 심사해!")
+async def recheck(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        description = await find_recent_character_description(interaction.channel, interaction.user)
+        if not description:
+            await interaction.followup.send("❌ 최근 캐릭터 설명을 못 찾았어! 먼저 올려줘~ 😊")
+            return
+
+        result = await check_character(description, interaction.user, interaction.guild, interaction.channel)
+        await interaction.followup.send(f"{interaction.user.mention} {result}")
+
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"재검사 요청\n유저: {interaction.user}\n결과: {result}")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+bot.run(DISCORD_TOKEN)
