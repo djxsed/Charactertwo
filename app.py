@@ -177,9 +177,7 @@ async def validate_character(description):
     for match in matches:
         if match[1]:
             value = int(match[1])
-            if not (1 <= value <=  chętnie
-
-6):
+            if not (1 <= value <= 6):
                 return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
         elif match[2]:
             value = int(match[2])
@@ -280,7 +278,6 @@ async def check_character(description, member, guild, thread):
             await save_result(str(thread.id), description, False, error_message, None)
             return error_message
 
-        # 프롬프트에 "간결하게" 지침 추가
         prompt = f"""
         디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
         1. 서버 규칙에 맞는지 판단해.
@@ -376,7 +373,7 @@ async def on_thread_create(thread):
             message = messages[0]
             can_proceed, error_message = await check_cooldown(str(message.author.id))
             if not can_proceed:
-                await thread.send(f"{message.author.mention} {error_message}")
+                await thread.send(f"{message.author.ention} {error_message}")
                 return
 
             result = await check_character(message.content, message.author, message.guild, thread)
@@ -409,7 +406,6 @@ async def feedback(interaction: discord.Interaction, question: str):
             return
 
         pass_status, reason, role_name = cached_result
-        # 피드백 프롬프트에도 "간결하게" 지침 추가
         prompt = f"""
         캐릭터 설명: {description}
         심사 결과: {'통과' if pass_status else '실패'}, 이유: {reason}
