@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 # 환경 변수 불러오기: 비밀 정보(예: 비밀번호)를 안전하게 저장해둔 곳에서 가져와
 load_dotenv()
-DISCORD_TOKEN = ..
-OPENAI_API_KEY = ..
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # OpenAI 클라이언트 초기화: OpenAI와 대화할 준비를 해
 try:
