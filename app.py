@@ -10,6 +10,15 @@ import hashlib
 import uuid
 import asyncio
 from collections import deque
+from flask import Flask
+import threading
+
+# Flask 웹 서버 설정
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Discord Bot is running!"
 
 # 환경 변수 불러오기 (비밀 정보 보호)
 load_dotenv()
@@ -168,7 +177,9 @@ async def validate_character(description):
     for match in matches:
         if match[1]:
             value = int(match[1])
-            if not (1 <= value <= 6):
+            if not (1 <= value <=  chętnie
+
+6):
                 return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
         elif match[2]:
             value = int(match[2])
@@ -437,4 +448,9 @@ async def recheck(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
-bot.run(DISCORD_TOKEN)
+# Flask와 디스코드 봇을 동시에 실행
+if __name__ == "__main__":
+    # Flask 서버를 백그라운드에서 실행
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
+    # 디스코드 봇 실행
+    bot.run(DISCORD_TOKEN)
