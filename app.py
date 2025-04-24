@@ -15,6 +15,7 @@ from collections import deque
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -30,7 +31,7 @@ BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
 MIN_LENGTH = 50
 REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 ALLOWED_RACES = ["인간", "마법사", "A.M.L", "요괴"]
-ALLOWED_ROLES = ["학생", "선생", "A.M.L"]
+ALLOWED_ROLES = ["학생", "선생님", "A.M.L"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
@@ -291,20 +292,20 @@ async def check_character(description, member, guild, thread):
 
         **학생/선생님/A.M.L 판단 (이 순서대로 엄격히 확인)**:
         1. 소속에 'AML' 또는 'A.M.L'이 포함되면 A.M.L로 판단.
-        2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생으로 판단.
+        2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생님으로 판단.
         3. 소속에 '학생'이 적혀있다면 학생으로 판단.
         4. 위 조건에 해당되지 않으면 실패.
 
         **주의**:
-        - A.M.L이나 선생 조건이 충족되면 학생으로 판단하지 마.
-        - 역할은 반드시 학생, 선생, A.M.L 중 하나만 선택.
+        - A.M.L이나 선생님 조건이 충족되면 학생으로 판단하지 마.
+        - 역할은 반드시 학생, 선생님, A.M.L 중 하나만 선택.
         - 역할 판단이 모호하면 실패 처리.
 
         **캐릭터 설명**:
         {description}
 
         **응답 형식**:
-        - 통과: "✅ 역할: [학생|선생|A.M.L]"
+        - 통과: "✅ 역할: [학생|선생님|A.M.L]"
         - 실패: "❌ [실패 이유]"
         """
         try:
