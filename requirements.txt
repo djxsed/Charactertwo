@@ -1,0 +1,1 @@
+discord.py openai aiosqlite python-dotenv
