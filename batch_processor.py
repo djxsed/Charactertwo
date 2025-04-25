@@ -5,29 +5,29 @@ import discord
 from discord.ext import commands
 from openai import OpenAI
 import aiosqlite
-from datetime import datetime, timezone  # UTC 시간 처리를 위해 필요
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 import asyncio
 import hashlib
 import logging
 
-# 로그 설정: 마치 일기 쓰듯이 프로그램이 뭘 했는지 기록해
+# 로그 설정
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.FileHandler("batch_processor.log"),  # 로그를 파일에 저장
-        logging.StreamHandler()  # 터미널에도 출력
+        logging.FileHandler("batch_processor.log"),
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
-# 환경 변수 불러오기: 비밀 정보(예: 비밀번호)를 안전하게 저장해둔 곳에서 가져와
+# 환경 변수 불러오기
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# OpenAI 클라이언트 초기화: OpenAI와 대화할 준비를 해
+# OpenAI 클라이언트 초기화
 try:
     if not OPENAI_API_KEY:
         raise ValueError("OPENAI_API_KEY가 .env 파일에 없어!")
@@ -37,20 +37,38 @@ except Exception as e:
     logger.error(f"OpenAI 클라이언트 초기화 실패: {str(e)}")
     raise
 
-# 디스코드 봇 설정: 디스코드에서 메시지를 보내고 받을 준비를 해
+# 디스코드 봇 설정
 intents = discord.Intents.default()
 intents.guilds = True
+intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# 로그 채널 ID: 오류나 결과를 기록할 디스코드 채널
-LOG_CHANNEL_ID = 1358060156742533231  # 너의 서버 로그 채널 ID로 바꿔!
+# 로그 채널 ID
+LOG_CHANNEL_ID = 1358060156742533231
 
-# 허용된 역할: 캐릭터가 가질 수 있는 역할 목록
-ALLOWED_ROLES = ["학생", "선생님", "A.M.L"]
+# 기본 설정값
+DEFAULT_ALLOWED_RACES = ["인간", "마법사", "A.M.L", "요괴"]
+DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "A.M.L"]
+DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
+
+async def get_settings(guild_id):
+    """서버별 설정 조회"""
+    try:
+        async with aiosqlite.connect("characters.db") as db:
+            async with db.execute("SELECT allowed_roles, check_channel_name FROM settings WHERE guild_id = ?", (str(guild_id),)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    allowed_roles = row[0].split(",") if row[0] else DEFAULT_ALLOWED_ROLES
+                    check_channel_name = row[1] if row[1] else DEFAULT_CHECK_CHANNEL_NAME
+                    return allowed_roles, check_channel_name
+                return DEFAULT_ALLOWED_ROLES, DEFAULT_CHECK_CHANNEL_NAME
+    except Exception as e:
+        logger.error(f"설정 조회 실패: guild_id={guild_id}, error={str(e)}")
+        return DEFAULT_ALLOWED_ROLES, DEFAULT_CHECK_CHANNEL_NAME
 
 async def get_pending_tasks():
-    """대기 중인 작업을 데이터베이스에서 가져와. 마치 할 일 목록을 확인하는 거야!"""
+    """대기 중인 작업을 데이터베이스에서 가져오기"""
     try:
         async with aiosqlite.connect("characters.db") as db:
             async with db.execute("""
@@ -65,7 +83,7 @@ async def get_pending_tasks():
         return []
 
 async def update_task_status(task_id: str, status: str, result: dict = None):
-    """작업 상태를 업데이트해. 예: '대기 중' -> '처리 중' -> '완료'"""
+    """작업 상태 업데이트"""
     try:
         async with aiosqlite.connect("characters.db") as db:
             if result:
@@ -84,10 +102,10 @@ async def update_task_status(task_id: str, status: str, result: dict = None):
         logger.error(f"작업 상태 업데이트 실패: task_id={task_id}, error={str(e)}")
 
 async def save_character_result(character_id: str, description: str, pass_status: bool, reason: str, role_name: str):
-    """캐릭터 심사 결과를 데이터베이스에 저장해. 마치 시험 결과를 기록하는 거야!"""
+    """캐릭터 심사 결과 저장"""
     try:
         description_hash = hashlib.md5(description.encode()).hexdigest()
-        timestamp = datetime.now(timezone.UTC).isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect("characters.db") as db:
             await db.execute(
                 """
@@ -102,7 +120,7 @@ async def save_character_result(character_id: str, description: str, pass_status
         logger.error(f"캐릭터 결과 저장 실패: character_id={character_id}, error={str(e)}")
 
 async def send_discord_message(channel_id: str, thread_id: str, user_id: str, message: str):
-    """디스코드에 메시지를 보내. 마치 친구한테 문자 보내는 것 같아!"""
+    """디스코드에 메시지 보내기"""
     try:
         channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
         if not channel:
@@ -127,7 +145,7 @@ async def send_discord_message(channel_id: str, thread_id: str, user_id: str, me
                 logger.error(f"로그 채널 메시지 전송 실패: {str(log_error)}")
 
 def create_jsonl_file(tasks: list, filename: str):
-    """작업을 OpenAI Batch API용 파일로 만들어. 마치 편지 봉투에 내용물을 넣는 거야!"""
+    """OpenAI Batch API용 .jsonl 파일 생성"""
     try:
         with open(filename, "w", encoding="utf-8") as f:
             for task in tasks:
@@ -152,7 +170,7 @@ def create_jsonl_file(tasks: list, filename: str):
         raise
 
 async def process_batch():
-    """작업을 처리하는 메인 함수야. 마치 공장에서 물건을 만드는 기계 같아!"""
+    """Batch 작업 처리 메인 함수"""
     logger.info("Batch 처리 시작")
     while True:
         try:
@@ -250,14 +268,18 @@ async def process_batch():
                         role_name = None
                         reason = response.replace("✅", "").replace("❌", "").strip()
 
+                        # 서버별 허용된 역할 조회
+                        guild_id = int(channel_id.split("-")[0]) if "-" in channel_id else int(channel_id)
+                        allowed_roles, _ = await get_settings(guild_id)
+
                         if pass_status:
-                            for role in ALLOWED_ROLES:
+                            for role in allowed_roles:
                                 if f"역할: {role}" in response:
                                     role_name = role
                                     break
-                            if not role_name:
-                                await save_character_result(character_id, description, False, "유효한 역할 없음", None)
-                                message = "❌ 앗, 유효한 역할이 없네! 학생, 선생님, A.M.L 중 하나로 설정해줘~ 😊"
+                            if not role_name or role_name not in allowed_roles:
+                                await save_character_result(character_id, description, False, f"유효한 역할 없음 (허용된 역할: {', '.join(allowed_roles)})", None)
+                                message = f"❌ 앗, 유효한 역할이 없네! {', '.join(allowed_roles)} 중 하나로 설정해줘~ 😊"
                             else:
                                 await save_character_result(character_id, description, True, "통과", role_name)
                                 message = f"🎉 우와, 대단해! 통과했어~ 역할: {role_name} 🎊"
@@ -267,17 +289,54 @@ async def process_batch():
 
                         if pass_status and role_name:
                             try:
-                                # 서버 ID는 채널 ID에서 추정
-                                guild_id = int(channel_id.split("-")[0]) if "-" in channel_id else int(channel_id)
                                 guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
                                 if guild:
                                     member = await guild.fetch_member(int(user_id))
+
+                                    # 역할 확인
+                                    has_role = False
                                     role = discord.utils.get(guild.roles, name=role_name)
-                                    if role:
-                                        await member.add_roles(role)
-                                        message += f" (역할 `{role_name}`도 멋지게 부여했어! 😎)"
+                                    if role and role in member.roles:
+                                        has_role = True
+
+                                    # 종족 역할 확인 (인간/마법사/요괴)
+                                    race_role_name = None
+                                    race_role = None
+                                    if "인간" in description:
+                                        race_role_name = "인간"
+                                    elif "마법사" in description:
+                                        race_role_name = "마법사"
+                                    elif "요괴" in description:
+                                        race_role_name = "요괴"
+
+                                    if race_role_name:
+                                        race_role = discord.utils.get(guild.roles, name=race_role_name)
+                                        if race_role and race_role in member.roles:
+                                            has_role = True
+
+                                    # 이미 역할이 있는 경우 메시지만 표시
+                                    if has_role:
+                                        message = "🎉 이미 통과된 캐릭터야~ 역할은 이미 있어! 🎊"
                                     else:
-                                        message += f" (역할 `{role_name}`이 서버에 없네... 관리자한테 물어볼까? 🤔)"
+                                        # 역할 부여
+                                        if role:
+                                            try:
+                                                await member.add_roles(role)
+                                                message += f" (역할 `{role_name}` 부여했어! 😊)"
+                                            except discord.Forbidden:
+                                                message += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                        else:
+                                            message += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+                                        # 종족 역할 부여
+                                        if race_role:
+                                            try:
+                                                await member.add_roles(race_role)
+                                                message += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
+                                            except discord.Forbidden:
+                                                message += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                        elif race_role_name:
+                                            message += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
                                 else:
                                     message += " (서버를 찾을 수 없어... 🥺)"
                             except Exception as e:
@@ -332,7 +391,7 @@ async def process_batch():
 
 @bot.event
 async def on_ready():
-    """봇이 디스코드에 연결되면 실행돼"""
+    """봇이 디스코드에 연결되면 실행"""
     logger.info(f'Batch 처리자 봇 로그인됨: {bot.user}')
     try:
         await process_batch()
@@ -341,7 +400,7 @@ async def on_ready():
         raise
 
 if __name__ == "__main__":
-    """프로그램을 시작하는 부분이야"""
+    """프로그램 시작"""
     logger.info("Batch Processor 스크립트 시작")
     try:
         if not DISCORD_TOKEN:
