@@ -190,7 +190,7 @@ async def validate_character(description):
 
     return True, ""
 
-# Flex 작업 처리
+# Flex 작업 처리 (수정: 종족 역할 부여를 통과 시에만 적용)
 async def process_flex_queue():
     while True:
         if flex_queue:
@@ -219,20 +219,46 @@ async def process_flex_queue():
 
                         await save_result(character_id, description, pass_status, reason, role_name)
 
-                        thread = bot.get_channel(int(thread_id))
+                        thread = bot.get_channel(int(thread_id)) if thread_id else bot.get_channel(int(channel_id))
                         if thread:
-                            guild = thread.guild
+                            guild = thread.guild if hasattr(thread, 'guild') else thread
                             member = guild.get_member(int(user_id))
-                            if pass_status and role_name:
-                                role = discord.utils.get(guild.roles, name=role_name)
-                                if role:
-                                    try:
-                                        await member.add_roles(role)
-                                        result += f" (역할 `{role_name}` 부여했어! 😊)"
-                                    except discord.Forbidden:
-                                        result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
-                                else:
-                                    result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+                            if pass_status and task_type == "character_check":  # 캐릭터 심사일 때만 역할 부여
+                                # 체크 이모티콘 추가
+                                await thread.send("☑️")  # 통과 시 스레드에 체크 이모티콘 표시
+
+                                # 기존 역할 부여 (학생/선생님/A.M.L)
+                                if role_name:
+                                    role = discord.utils.get(guild.roles, name=role_name)
+                                    if role:
+                                        try:
+                                            await member.add_roles(role)
+                                            result += f" (역할 `{role_name}` 부여했어! 😊)"
+                                        except discord.Forbidden:
+                                            result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                    else:
+                                        result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+                                # 종족 기반 역할 부여 (인간/마법사/요괴) - 통과 시에만 적용
+                                race_role_name = None
+                                if "인간" in description:
+                                    race_role_name = "인간"
+                                elif "마법사" in description:
+                                    race_role_name = "마법사"
+                                elif "요괴" in description:
+                                    race_role_name = "요괴"
+
+                                if race_role_name:
+                                    race_role = discord.utils.get(guild.roles, name=race_role_name)
+                                    if race_role:
+                                        try:
+                                            await member.add_roles(race_role)
+                                            result += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
+                                        except discord.Forbidden:
+                                            result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                    else:
+                                        result += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
                             await thread.send(f"{member.mention} {result}")
 
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("completed", task_id))
@@ -240,17 +266,17 @@ async def process_flex_queue():
 
                         log_channel = bot.get_channel(LOG_CHANNEL_ID)
                         if log_channel:
-                            await log_channel.send(f"캐릭터 심사 완료\n유저: {member}\n결과: {result}")
+                            await log_channel.send(f"작업 완료\n유저: {member}\n타입: {task_type}\n결과: {result}")
 
                     except Exception as e:
-                        await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None)
+                        await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None) if task_type == "character_check" else None
                         if thread:
-                            await thread.send(f"❌ 앗, 심사 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹")
+                            await thread.send(f"❌ 앗, 처리 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("failed", task_id))
                         await db.commit()
         await asyncio.sleep(1)
 
-# 캐릭터 심사 로직
+# 캐릭터 심사 로직 (수정: 캐싱된 결과에서도 종족 역할 부여를 통과 시에만 적용)
 async def check_character(description, member, guild, thread):
     print(f"캐릭터 검사 시작: {member.name}")
     try:
@@ -259,6 +285,7 @@ async def check_character(description, member, guild, thread):
             pass_status, reason, role_name = cached_result
             if pass_status:
                 result = f"🎉 이미 통과된 캐릭터야~ 역할: {role_name} 🎊"
+                # 기존 역할 부여 (학생/선생님/A.M.L)
                 if role_name:
                     role = discord.utils.get(guild.roles, name=role_name)
                     if role:
@@ -269,6 +296,27 @@ async def check_character(description, member, guild, thread):
                             result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
                     else:
                         result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+                # 종족 기반 역할 부여 (인간/마법사/요괴) - 통과 시에만 적용 (이미 통과된 경우이므로 실행)
+                race_role_name = None
+                if "인간" in description:
+                    race_role_name = "인간"
+                elif "마법사" in description:
+                    race_role_name = "마법사"
+                elif "요괴" in description:
+                    race_role_name = "요괴"
+
+                if race_role_name:
+                    race_role = discord.utils.get(guild.roles, name=race_role_name)
+                    if race_role:
+                        try:
+                            await member.add_roles(race_role)
+                            result += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
+                        except discord.Forbidden:
+                            result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                    else:
+                        result += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
             else:
                 result = f"❌ 이전에 실패했어... 이유: {reason} 다시 수정해봐! 💪"
             return result
@@ -301,7 +349,7 @@ async def check_character(description, member, guild, thread):
         **학생/선생님/A.M.L 판단 (이 순서대로 엄격히 확인)**:
         1. 소속에 'AML' 또는 'A.M.L'이 포함되면 A.M.L로 판단.
         2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생님으로 판단.
-        3. 소속에 '학생'이 적혀있다면 학생으로 판단.
+        3. 소속에 '학생' 또는 괄호 사이의 학생 등이 적혀있다면 학생으로 판단.
         4. 위 조건에 해당되지 않으면 실패.
 
         **주의**:
@@ -373,7 +421,7 @@ async def on_thread_create(thread):
             message = messages[0]
             can_proceed, error_message = await check_cooldown(str(message.author.id))
             if not can_proceed:
-                await thread.send(f"{message.author.ention} {error_message}")
+                await thread.send(f"{message.author.mention} {error_message}")  # 수정: mention 오타 수정
                 return
 
             result = await check_character(message.content, message.author, message.guild, thread)
@@ -440,6 +488,40 @@ async def recheck(interaction: discord.Interaction):
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"재검사 요청\n유저: {interaction.user}\n결과: {result}")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# 질문 명령어 추가 (QnA 채널에서 사용)
+@bot.tree.command(name="질문", description="QnA와 입학-신청서 채널에 캐릭터 신청 관련 질문해봐!! 예: /질문 이 서버 규칙이 뭐야?")
+async def ask_question(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
+    try:
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        # QnA 채널인지 확인 (채널 이름으로 간단히 판단)
+        if "❓❗qna룸" or "입학-신청서" not in interaction.channel.name.lower():
+            await interaction.followup.send("❌ 이 명령어는 QnA 채널에서만 사용할 수 있어! 😅")
+            return
+
+        prompt = f"""
+        디스코드 역할극 서버의 도우미 봇이야. 사용자가 질문을 했어.
+        질문: {question}
+        서버 규칙과 관련된 질문이면 규칙을 간단히 설명하고, 그 외의 질문은 서버와 관련된 재밌는 답변을 줘.
+        50자 이내로 간단히 답변해. 말투는 친근하고 재밌게!
+        **규칙**:
+        - 금지 단어: {', '.join(BANNED_WORDS)}.
+        - 필수 항목: {', '.join(REQUIRED_FIELDS)}.
+        - 허용 종족: {', '.join(ALLOWED_RACES)}.
+        - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5).
+        - 나이: 1~5000살.
+        - 소속: A.M.L, 하람고, 하람고등학교만 허용.
+        """
+        task_id = await queue_flex_task(None, None, str(interaction.user.id), str(interaction.channel.id), None, "question", prompt)
+        await interaction.followup.send("⏳ 질문 처리 중이야! 곧 답변해줄게~ 😊")
 
     except Exception as e:
         await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
