@@ -405,7 +405,7 @@ async def process_flex_queue():
                                 # 원본 메시지에 ✅ 반응 추가
                                 if original_message:
                                     try:
-                                        await original_message.add_reaction("✅")
+                                        await original_message.add_reaction("☑️")
                                     except discord.Forbidden:
                                         await thread.send("❌ 메시지에 반응 추가 권한이 없어! 🥺")
 
