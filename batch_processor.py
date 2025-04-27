@@ -155,7 +155,7 @@ def create_jsonl_file(tasks: list, filename: str):
                     "method": "POST",
                     "url": "/v1/chat/completions",
                     "body": {
-                        "model": "gpt-4.1-mini",
+                        "model": "gpt-4.1-nano",
                         "messages": [
                             {"role": "system", "content": "You are a Discord bot for character review."},
                             {"role": "user", "content": prompt}
