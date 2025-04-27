@@ -20,7 +20,7 @@ app = Flask(__name__)
 def home():
     return "Discord Bot is running!"
 
-# 환경 변수 불러오기 (비밀 정보 보호)
+# 환경 변수 불러오기
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -35,7 +35,7 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# 상수 정의 (설정값들)
+# 상수 정의
 BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
 MIN_LENGTH = 50
 REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
@@ -43,16 +43,20 @@ LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
 
-# 기본 설정값 (DB에 저장되지 않은 경우 사용)
+# 기본 설정값
 DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 숫자 속성 체크용 정규 표현식
-NUMBER_PATTERN = r"\b(체력|지능|이동속도|힘)\s*:\s*([1-6])\b|\b냉철\s*:\s*([1-4])\b|\[\w+\]\s*\((\d)\)"
+# 숫자 속성 및 기술 체크용 정규 표현식 (수정됨)
+NUMBER_PATTERN = (
+    r"\b(체력|지능|이동속도|힘)\s*:\s*([1-6])\b|"
+    r"\b냉철\s*:\s*([1-4])\b|"
+    r"<([^>]+)>\s*(\d)\s*(?:\n\s*([^\n<]+))?"  # 기술명, 위력, 설명(선택적) 캡처
+)
 AGE_PATTERN = r"나이:\s*(\d+)"
 
-# 기본 프롬프트 (서버별 프롬프트가 없을 경우 사용)
+# 기본 프롬프트 (기술 설명 처리 지침 추가)
 DEFAULT_PROMPT = """
 디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
 1. 서버 규칙에 맞는지 판단해.
@@ -64,6 +68,7 @@ DEFAULT_PROMPT = """
 - 필수 항목: {required_fields} (이미 확인됨).
 - 허용 종족: {allowed_races}.
 - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
+- 기술 설명: <기술명> 뒤의 숫자는 위력, 다음 줄의 들여쓰기된 텍스트는 기술 설명으로 간주.
 - 설명은 현실적이고 역할극에 적합해야 해.
 - 시간/현실 조작 능력 금지.
 - 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
@@ -325,7 +330,7 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증
+# 캐릭터 설명 검증 (수정됨)
 async def validate_character(description):
     if len(description) < MIN_LENGTH:
         return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
@@ -346,20 +351,33 @@ async def validate_character(description):
     else:
         return False, "❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
 
+    # 기술 및 속성 검증
     matches = re.findall(NUMBER_PATTERN, description)
+    skill_count = 0
+    skills = []
+    
     for match in matches:
-        if match[1]:
+        if match[1]:  # 체력, 지능, 이동속도, 힘
             value = int(match[1])
             if not (1 <= value <= 6):
                 return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
-        elif match[2]:
+        elif match[2]:  # 냉철
             value = int(match[2])
             if not (1 <= value <= 4):
                 return False, f"❌ 냉철이 {value}? 1~4로 해줘~ 🧠"
-        elif match[3]:
-            value = int(match[3])
+        elif match[3]:  # 기술
+            skill_name = match[3]
+            value = int(match[4])
+            skill_desc = match[5] if match[5] else None
             if not (1 <= value <= 5):
-                return False, f"❌ 기술/마법 위력이 {value}? 1~5로 해줘~ 🔥"
+                return False, f"❌ 기술 '{skill_name}' 위력이 {value}? 1~5로 해줘~ 🔥"
+            skill_count += 1
+            skills.append({"name": skill_name, "power": value, "description": skill_desc})
+            if not skill_desc:
+                return False, f"❌ 기술 '{skill_name}'에 설명이 없어! 설명을 추가해줘~ 📜"
+
+    if skill_count > 6:
+        return False, f"❌ 기술이 {skill_count}개야? 최대 6개까지 가능해~ ⚔️"
 
     return True, ""
 
@@ -402,7 +420,6 @@ async def process_flex_queue():
                             original_message = messages[0] if messages else None
 
                             if pass_status and task_type == "character_check":
-                                # 원본 메시지에 ✅ 반응 추가
                                 if original_message:
                                     try:
                                         await original_message.add_reaction("☑️")
