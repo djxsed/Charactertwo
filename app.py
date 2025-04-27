@@ -38,7 +38,7 @@ bot = commands.Bot(command_prefix="/", intents=intents)
 # 상수 정의
 BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
 MIN_LENGTH = 50
-REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
+REQUIRED_FIELDS = ["이름", "나이", "성격"]  # 콜론 제거로 유연성 확보
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
@@ -48,15 +48,17 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 숫자 속성 및 기술 체크용 정규 표현식 (수정됨)
+# 숫자 속성 및 기술 체크용 정규 표현식 (확장됨)
 NUMBER_PATTERN = (
-    r"\b(체력|지능|이동속도|힘)\s*:\s*([1-6])\b|"
-    r"\b냉철\s*:\s*([1-4])\b|"
-    r"<([^>]+)>\s*(\d)\s*(?:\n\s*([^\n<]+))?"  # 기술명, 위력, 설명(선택적) 캡처
+    r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성: 띄어쓰기 및 콜론 허용
+    r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
+    # 기술: 다양한 괄호 및 위력 표기 지원
+    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d))|(?:([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d))))\s*(?:[ \t]*(?:[^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)))?"
 )
-AGE_PATTERN = r"나이:\s*(\d+)"
+AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)"  # 나이: 띄어쓰기 및 콜론 허용
+FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)"  # 일반 필드 매칭 (이름, 성격, 과거사 등)
 
-# 기본 프롬프트 (기술 설명 처리 지침 추가)
+# 기본 프롬프트 (다양한 괄호, 위력 표기, 설명 처리 지침 추가)
 DEFAULT_PROMPT = """
 디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
 1. 서버 규칙에 맞는지 판단해.
@@ -68,7 +70,10 @@ DEFAULT_PROMPT = """
 - 필수 항목: {required_fields} (이미 확인됨).
 - 허용 종족: {allowed_races}.
 - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
-- 기술 설명: <기술명> 뒤의 숫자는 위력, 다음 줄의 들여쓰기된 텍스트는 기술 설명으로 간주.
+- 필드 형식: '필드명: 값', '필드명 : 값', '필드명:값' 등 띄어쓰기 및 콜론(: 또는 :) 허용.
+- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」, 또는 기술명 등 다양함.
+- 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등 허용.
+- 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤의 텍스트로 간주.
 - 설명은 현실적이고 역할극에 적합해야 해.
 - 시간/현실 조작 능력 금지.
 - 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
@@ -330,14 +335,21 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨)
+# 캐릭터 설명 검증 (확장됨)
 async def validate_character(description):
     if len(description) < MIN_LENGTH:
         return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
 
-    missing_fields = [field for field in REQUIRED_FIELDS if field not in description]
+    # 필수 필드 체크 (띄어쓰기 및 콜론 유연 처리)
+    found_fields = []
+    for field in REQUIRED_FIELDS:
+        pattern = r"\b" + field + r"\s*[:：]\s*([^\n]+)"
+        if re.search(pattern, description):
+            found_fields.append(field)
+    
+    missing_fields = [field for field in REQUIRED_FIELDS if field not in found_fields]
     if missing_fields:
-        return False, f"❌ {', '.join(missing_fields)}가 빠졌어! 꼭 넣어줘~ 🧐"
+        return False, f"❌ {', '.join(missing_fields)}이 빠졌어! '{field}: 값' 형식으로 넣어줘~ 🧐"
 
     found_banned_words = [word for word in BANNED_WORDS if word in description]
     if found_banned_words:
@@ -347,9 +359,9 @@ async def validate_character(description):
     if age_match:
         age = int(age_match.group(1))
         if not (1 <= age <= 5000):
-            return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줘~ 🕰️"
+            return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줬으면 좋겠어~ 🕰️"
     else:
-        return False, "❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
+        return False, f"❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
 
     # 기술 및 속성 검증
     matches = re.findall(NUMBER_PATTERN, description)
@@ -365,16 +377,17 @@ async def validate_character(description):
             value = int(match[2])
             if not (1 <= value <= 4):
                 return False, f"❌ 냉철이 {value}? 1~4로 해줘~ 🧠"
-        elif match[3]:  # 기술
-            skill_name = match[3]
-            value = int(match[4])
-            skill_desc = match[5] if match[5] else None
+        elif match[3] or match[5]:  # 기술 (괄호 있거나 없거나)
+            skill_name = match[3] if match[3] else match[5]
+            skill_name = skill_name.strip()
+            value = int(match[4] if match[4] else match[6])
+            skill_desc = match[7].strip() if match[7] else None
             if not (1 <= value <= 5):
                 return False, f"❌ 기술 '{skill_name}' 위력이 {value}? 1~5로 해줘~ 🔥"
             skill_count += 1
             skills.append({"name": skill_name, "power": value, "description": skill_desc})
             if not skill_desc:
-                return False, f"❌ 기술 '{skill_name}'에 설명이 없어! 설명을 추가해줘~ 📜"
+                return False, f"❌ 기술 '{skill_name}'에 설명이 없어! 같은 줄이나 다음 줄에 추가해줘~ 📜 예: {skill_name} 위력: {value} 설명문"
 
     if skill_count > 6:
         return False, f"❌ 기술이 {skill_count}개야? 최대 6개까지 가능해~ ⚔️"
@@ -584,7 +597,11 @@ async def find_recent_character_description(channel, user):
     try:
         async for message in channel.history(limit=100):
             if message.author == user and not message.content.startswith("/") and len(message.content) >= MIN_LENGTH:
-                if all(field in message.content for field in REQUIRED_FIELDS):
+                found_fields = []
+                for field in REQUIRED_FIELDS:
+                    if re.search(r"\b" + field + r"\s*[:：]\s*[^\n]+", message.content):
+                        found_fields.append(field)
+                if len(found_fields) == len(REQUIRED_FIELDS):
                     return message.content
     except discord.Forbidden:
         return None
@@ -808,7 +825,7 @@ async def modify_roles(interaction: discord.Interaction, roles: str):
             await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 역할: {', '.join(new_roles)}")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+        await interaction.followup.send(f"❌ 오류  오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 검사 채널 수정 명령어
 @bot.tree.command(name="검사채널_수정", description="관리실 채널에서 검사 채널 이름 수정해! 예: /검사채널_수정 캐릭터-심사")
@@ -837,6 +854,41 @@ async def modify_check_channel(interaction: discord.Interaction, channel_name: s
 
     except Exception as e:
         await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# 양식 안내 명령어 (새로 추가)
+@bot.tree.command(name="양식_안내", description="캐릭터 양식 예시를 확인해!")
+async def format_guide(interaction: discord.Interaction):
+    await interaction.response.defer()
+    guide = """
+캐릭터 프로필 양식
+"(한마디)"
+
+이름:
+성별:
+종족:
+나이:
+소속: (학생, A.M.L, 선생 중 하나로 해주세요)
+학년 및 반:(학생일경우 써주시고 아니라면 지워주세요)
+담당 과목 및 학년, 반:(선생님일경우 써주시고 아니라면 지워주세요)
+동아리: (없다면 미기재해도 됩니다)
+
+키/몸무게:
+성격: 
+외모:(사진이 있다면 미기재해도 됩니다)
+
+체력:
+지능:
+이동속도:
+힘:
+냉철:
+사용 기술/마법/요력:
+
+과거사:
+특징:
+
+관계: 
+    """
+    await interaction.followup.send(guide)
 
 # Flask와 디스코드 봇을 동시에 실행
 if __name__ == "__main__":
