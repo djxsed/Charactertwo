@@ -623,7 +623,7 @@ async def ask_question(interaction: discord.Interaction, question: str):
             return
 
         # QnA 채널인지 확인 (채널 이름으로 간단히 판단)
-        if "qna" not in interaction.channel.name.lower():
+        if "❓❗qna룸" or "qna" or "qna방" or "qna룸" not in interaction.channel.name.lower():
             await interaction.followup.send("❌ 이 명령어는 QnA 채널에서만 사용할 수 있어! 😅")
             return
 
