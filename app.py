@@ -436,7 +436,7 @@ async def process_flex_queue():
                                             has_role = True
 
                                     if has_role:
-                                        result = "🎉 이미 통과된 캐릭터야~ 역할은 이미 있어! 🎊"
+                                        result = "🎉 축하해! 통과했어!~ 역할은 이미 있으니까 이 캐릭터로 역극 마음껏 즐길 수 있어~! 🎊"
                                     else:
                                         if role:
                                             try:
