@@ -44,8 +44,8 @@ COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
 
 # 기본 설정값 (DB에 저장되지 않은 경우 사용)
-DEFAULT_ALLOWED_RACES = ["인간", "마법사", "A.M.L", "요괴"]
-DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "A.M.L"]
+DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
+DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
 # 숫자 속성 체크용 정규 표현식
@@ -75,13 +75,13 @@ DEFAULT_PROMPT = """
 - 기술/마법/요력: 시간, 범위, 위력 등이 명확해야 하고 너무 크면 안 돼. (예: 18초, 50m, 5).
 
 **역할 판단 (이 순서대로 엄격히 확인)**:
-1. 소속에 'AML' 또는 'A.M.L'이 포함되면 A.M.L로 판단.
+1. 소속에 'AML' 또는 'A.M.L'이 포함되면 AML로 판단.
 2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생님으로 판단.
 3. 소속에 '학생' 또는 괄호 사이의 학생 등이 적혀있다면 학생으로 판단.
 4. 위 조건에 해당되지 않으면 실패.
 
 **주의**:
-- A.M.L이나 선생님 조건이 충족되면 학생으로 판단하지 마.
+- AML이나 선생님 조건이 충족되면 학생으로 판단하지 마.
 - 역할은 반드시 {allowed_roles} 중 하나만 선택.
 - 역할 판단이 모호하면 실패 처리.
 
@@ -315,7 +315,7 @@ async def process_flex_queue():
 
                     try:
                         response = openai_client.chat.completions.create(
-                            model="gpt-4.1-nano",
+                            model="gpt-4.1-mini",
                             messages=[{"role": "user", "content": prompt}],
                             max_tokens=50 
                         )
