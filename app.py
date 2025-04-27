@@ -48,17 +48,17 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 숫자 속성 및 기술 체크용 정규 표현식 (확장됨)
+# 숫자 속성 및 기술 체크용 정규 표현식 (수정됨)
 NUMBER_PATTERN = (
-    r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성: 띄어쓰기 및 콜론 허용
+    r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
     r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
-    # 기술: 다양한 괄호 및 위력 표기 지원
-    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d))|(?:([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d))))\s*(?:[ \t]*(?:[^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)))?"
+    # 기술: 필수 필드(이름, 나이, 성격 등)를 제외하고 괄호 또는 명시적 기술명만 인식
+    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d))|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d))))\s*(?:[ \t]*(?:[^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)))?"
 )
-AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)"  # 나이: 띄어쓰기 및 콜론 허용
-FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)"  # 일반 필드 매칭 (이름, 성격, 과거사 등)
+AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"  # 띄어쓰기 유무 처리
+FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"  # 필드: 띄어쓰기 유무 처리
 
-# 기본 프롬프트 (다양한 괄호, 위력 표기, 설명 처리 지침 추가)
+# 기본 프롬프트 (필드/기술 구분 및 띄어쓰기 지침 추가)
 DEFAULT_PROMPT = """
 디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
 1. 서버 규칙에 맞는지 판단해.
@@ -71,9 +71,10 @@ DEFAULT_PROMPT = """
 - 허용 종족: {allowed_races}.
 - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
 - 필드 형식: '필드명: 값', '필드명 : 값', '필드명:값' 등 띄어쓰기 및 콜론(: 또는 :) 허용.
-- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」, 또는 기술명 등 다양함.
-- 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등 허용.
+- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」, 또는 기술명 등.
+- 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등.
 - 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤의 텍스트로 간주.
+- 필드(이름, 나이, 성격, 과거사 등)와 기술은 명확히 구분. 필드는 기술로 오인하지 마.
 - 설명은 현실적이고 역할극에 적합해야 해.
 - 시간/현실 조작 능력 금지.
 - 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
@@ -335,51 +336,64 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (확장됨)
+# 캐릭터 설명 검증 (수정됨: 필드와 기술 분리)
 async def validate_character(description):
     if len(description) < MIN_LENGTH:
         return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
 
     # 필수 필드 체크 (띄어쓰기 및 콜론 유연 처리)
     found_fields = []
+    field_values = {}
     for field in REQUIRED_FIELDS:
-        pattern = r"\b" + field + r"\s*[:：]\s*([^\n]+)"
-        if re.search(pattern, description):
+        pattern = r"\b" + field + r"\s*[:：]\s*([^\n]+)|(?:\b" + field + r"\s*[:：]([^\n]+))"
+        match = re.search(pattern, description)
+        if match:
+            value = match.group(1) or match.group(2)
             found_fields.append(field)
+            field_values[field] = value.strip()
     
     missing_fields = [field for field in REQUIRED_FIELDS if field not in found_fields]
     if missing_fields:
-        return False, f"❌ {', '.join(missing_fields)}이 빠졌어! '{field}: 값' 형식으로 넣어줘~ 🧐"
+        return False, f"❌ {', '.join(missing_fields)}이 빠졌어! '{field}: 값' 또는 '{field}:값' 형식으로 넣어줘~ 🧐"
 
     found_banned_words = [word for word in BANNED_WORDS if word in description]
     if found_banned_words:
         return False, f"❌ 금지된 단어 {', '.join(found_banned_words)}가 있어! 규칙 지켜줘~ 😅"
 
-    age_match = re.search(AGE_PATTERN, description)
-    if age_match:
-        age = int(age_match.group(1))
-        if not (1 <= age <= 5000):
-            return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줬으면 좋겠어~ 🕰️"
+    # 나이 검증
+    if "나이" in field_values:
+        try:
+            age = int(field_values["나이"])
+            if not (1 <= age <= 5000):
+                return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줬으면 좋겠어~ 🕰️"
+        except ValueError:
+            return False, f"❌ 나이는 숫자로 써줘! 예: '나이: 30' 또는 '나이:30' 😄"
     else:
-        return False, f"❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
+        return False, f"❌ 나이를 '나이: 숫자' 또는 '나이:숫자'로 써줘! 궁금해~ 😄"
 
     # 기술 및 속성 검증
     matches = re.findall(NUMBER_PATTERN, description)
     skill_count = 0
     skills = []
+    attributes = {}
     
     for match in matches:
         if match[1]:  # 체력, 지능, 이동속도, 힘
             value = int(match[1])
             if not (1 <= value <= 6):
                 return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
+            attributes[match[0]] = value
         elif match[2]:  # 냉철
             value = int(match[2])
             if not (1 <= value <= 4):
                 return False, f"❌ 냉철이 {value}? 1~4로 해줘~ 🧠"
-        elif match[3] or match[5]:  # 기술 (괄호 있거나 없거나)
+            attributes["냉철"] = value
+        elif match[3] or match[5]:  # 기술
             skill_name = match[3] if match[3] else match[5]
             skill_name = skill_name.strip()
+            # 필수 필드와 혼동 방지
+            if any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사"]):
+                continue
             value = int(match[4] if match[4] else match[6])
             skill_desc = match[7].strip() if match[7] else None
             if not (1 <= value <= 5):
@@ -599,7 +613,7 @@ async def find_recent_character_description(channel, user):
             if message.author == user and not message.content.startswith("/") and len(message.content) >= MIN_LENGTH:
                 found_fields = []
                 for field in REQUIRED_FIELDS:
-                    if re.search(r"\b" + field + r"\s*[:：]\s*[^\n]+", message.content):
+                    if re.search(r"\b" + field + r"\s*[:：]\s*[^\n]+|\b" + field + r"\s*[:：][^\n]+", message.content):
                         found_fields.append(field)
                 if len(found_fields) == len(REQUIRED_FIELDS):
                     return message.content
@@ -825,7 +839,7 @@ async def modify_roles(interaction: discord.Interaction, roles: str):
             await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 역할: {', '.join(new_roles)}")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ 오류  오류야! {str(e)} 다시 시도해~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 검사 채널 수정 명령어
 @bot.tree.command(name="검사채널_수정", description="관리실 채널에서 검사 채널 이름 수정해! 예: /검사채널_수정 캐릭터-심사")
@@ -855,14 +869,13 @@ async def modify_check_channel(interaction: discord.Interaction, channel_name: s
     except Exception as e:
         await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
-# 양식 안내 명령어 (새로 추가)
+# 양식 안내 명령어
 @bot.tree.command(name="양식_안내", description="캐릭터 양식 예시를 확인해!")
 async def format_guide(interaction: discord.Interaction):
     await interaction.response.defer()
     guide = """
-캐릭터 프로필 양식
+  캐릭터 프로필 양식
 "(한마디)"
-
 이름:
 성별:
 종족:
