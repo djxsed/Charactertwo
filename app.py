@@ -363,7 +363,7 @@ async def validate_character(description):
 
     return True, ""
 
-# Flex 작업 처리 (수정: 통과 시 메시지 대신 반응 추가)
+# Flex 작업 처리
 async def process_flex_queue():
     while True:
         if flex_queue:
@@ -486,7 +486,8 @@ async def check_character(description, member, guild, thread):
                 if role_name and role_name not in allowed_roles:
                     result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
                 else:
-                    has_role = False Economic role = None
+                    has_role = False
+                    role = None
                     if role_name:
                         role = discord.utils.get(guild.roles, name=role_name)
                         if role and role in member.roles:
