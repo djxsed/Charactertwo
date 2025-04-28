@@ -463,7 +463,7 @@ async def check_character(description, member, guild, thread):
                                 await member.add_roles(race_role)
                                 result += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
                             except discord.Forbidden:
-                                result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐!   팔로우! 🥺)"
+                                result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
                         elif race_role_name:
                             result += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
 
@@ -552,46 +552,6 @@ async def on_thread_create(thread):
             if log_channel:
                 await log_channel.send(f"오류: {str(e)}")
 
-# 메시지 수정 이벤트 처리
-@bot.event
-async def on_message_edit(before, after):
-    # 서버별 검사 채널 이름 조회
-    if isinstance(before.channel, discord.Thread):
-        thread = before.channel
-        _, check_channel_name = await get_settings(thread.guild.id)
-        if thread.parent.name != check_channel_name or before.author.bot:
-            return
-
-        # 스레드의 첫 메시지인지 확인
-        messages = [message async for message in thread.history(limit=1, oldest_first=True)]
-        if not messages or messages[0].id != before.id:
-            return
-
-        # 체크 이모티콘(✅)과 수정 허락 이모티콘(📝) 확인
-        has_check = False
-        has_edit_permit = False
-        async for message in thread.history(limit=100):
-            if message.author.bot and message.content == "✅":
-                has_check = True
-            if message.author.bot and message.content == "📝":
-                has_edit_permit = True
-
-        # 체크 이모티콘이 있고 수정 허락 이모티콘이 없으면 이전 메시지로 복원
-        if has_check and not has_edit_permit:
-            await before.edit(content=before.content)
-            await thread.send(f"{before.author.mention} ❌ 통과된 캐릭터는 수정하려면 📝 허락이 필요해! 관리자에게 문의해~ 😅")
-            return
-
-        # 쿨다운 확인
-        can_proceed, error_message = await check_cooldown(str(before.author.id))
-        if not can_proceed:
-            await thread.send(f"{before.author.mention} {error_message}")
-            return
-
-        # 수정된 메시지로 심사 진행
-        result = await check_character(after.content, before.author, thread.guild, thread)
-        await thread.send(f"{before.author.mention} {result}")
-
 # 피드백 명령어
 @bot.tree.command(name="피드백", description="심사 결과에 대해 질문해! 예: /피드백 왜 안된거야?")
 async def feedback(interaction: discord.Interaction, question: str):
@@ -628,7 +588,7 @@ async def feedback(interaction: discord.Interaction, question: str):
 
 # 재검사 명령어
 @bot.tree.command(name="재검사", description="최근 캐릭터로 다시 심사해!")
-async def recheck(interaction: discord.Inter$ async def recheck(interaction: discord.Interaction):
+async def recheck(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
@@ -649,7 +609,7 @@ async def recheck(interaction: discord.Inter$ async def recheck(interaction: dis
             await log_channel.send(f"재검사 요청\n유저: {interaction.user}\n결과: {result}")
 
     except Exception as e:
-        await interaction.followup.send ظاهراً خطایی رخ داده است! دوباره امتحان کنید~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 질문 명령어
 @bot.tree.command(name="질문", description="QnA 채널에서 질문해! 예: /질문 이 서버 규칙이 뭐야?")
@@ -698,4 +658,96 @@ async def modify_prompt(interaction: discord.Interaction, new_prompt: str):
         # 쿨다운 확인
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
         if not can_proceed:
-            await 
+            await interaction.followup.send(error_message)
+            return
+
+        # 프롬프트 길이 제한 (최대 2000자로 제한)
+        if len(new_prompt) > 2000:
+            await interaction.followup.send("❌ 프롬프트가 너무 길어! 2000자 이내로 줄여줘~ 📝")
+            return
+
+        # 프롬프트 저장
+        await save_prompt(interaction.guild.id, new_prompt)
+        await interaction.followup.send("✅ 프롬프트가 성공적으로 수정되었어! 이제 적용될 거야~ 😊")
+
+        # 로그 채널에 기록
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"프롬프트 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 프롬프트: {new_prompt[:100]}...")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# 역할 수정 명령어 (추가)
+@bot.tree.command(name="역할_수정", description="관리실 채널에서 허용된 역할 수정해! 예: /역할_수정 학생,전사,마법사")
+async def modify_roles(interaction: discord.Interaction, roles: str):
+    await interaction.response.defer()
+    try:
+        # 관리실 채널인지 확인
+        if "관리실" not in interaction.channel.name.lower():
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
+            return
+
+        # 쿨다운 확인
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        # 역할 목록 파싱 (쉼표로 구분)
+        new_roles = [role.strip() for role in roles.split(",")]
+        if not new_roles:
+            await interaction.followup.send("❌ 역할 목록이 비어있어! 최소 1개 이상 입력해줘~ 😅")
+            return
+
+        # 역할 목록 저장
+        await save_settings(interaction.guild.id, allowed_roles=new_roles)
+        await interaction.followup.send(f"✅ 허용된 역할이 수정되었어! 새로운 역할: {', '.join(new_roles)} 😊")
+
+        # 로그 채널에 기록
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 역할: {', '.join(new_roles)}")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# 검사 채널 수정 명령어 (추가)
+@bot.tree.command(name="검사채널_수정", description="관리실 채널에서 검사 채널 이름 수정해! 예: /검사채널_수정 캐릭터-심사")
+async def modify_check_channel(interaction: discord.Interaction, channel_name: str):
+    await interaction.response.defer()
+    try:
+        # 관리실 채널인지 확인
+        if "관리실" not in interaction.channel.name.lower():
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
+            return
+
+        # 쿨다운 확인
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        # 채널 이름 길이 제한 (최대 50자로 제한)
+        if len(channel_name) > 50:
+            await interaction.followup.send("❌ 채널 이름이 너무 길어! 50자 이내로 줄여줘~ 📝")
+            return
+
+        # 검사 채널 이름 저장
+        await save_settings(interaction.guild.id, check_channel_name=channel_name)
+        await interaction.followup.send(f"✅ 검사 채널 이름이 수정되었어! 새로운 채널 이름: `{channel_name}` 😊")
+
+        # 로그 채널에 기록
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            await log_channel.send(f"검사 채널 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 채널 이름: {channel_name}")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+
+# Flask와 디스코드 봇을 동시에 실행
+if __name__ == "__main__":
+    # Flask 서버를 백그라운드에서 실행
+    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
+    # 디스코드 봇 실행
+    bot.run(DISCORD_TOKEN)
