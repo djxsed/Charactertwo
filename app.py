@@ -12,6 +12,11 @@ import asyncio
 from collections import deque
 from flask import Flask
 import threading
+import logging
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -48,11 +53,11 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 정규 표현식 (수정됨: 기술 설명 캡처 개선)
+# 정규 표현식 (간소화: 기술 파싱 안정화)
 NUMBER_PATTERN = (
     r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
     r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
-    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:위력\s*[:：]?\s*(\d)?)?)|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사|사용 기술\/마법\/요력)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:위력\s*[:：]?\s*(\d)?)?)(?:\s*([^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)(?!\n)))?"
+    r"(?:[<\[({【《〈「]([^\]\)>}】》〉」\n]+)[\]\)>}】》〉」])\s*(?:(\d)?)?(?:\s*([^\n]*))?"  # 기술: (불꽃)2 손에서 불 발사
 )
 AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"
 FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"
@@ -71,7 +76,7 @@ DEFAULT_PROMPT = """
 - 허용 종족: {allowed_races}.
 - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
 - 필드 형식: '필드명: 값', '필드명 : 값', '필드명:값' 등 띄어쓰기 및 콜론(: 또는 :) 허용.
-- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」, 또는 기술명 등.
+- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」.
 - 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등.
 - 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤 텍스트.
 - 필드(이름, 나이, 성격, 과거사 등)와 기술은 구분. 필드는 기술로 오인 금지.
@@ -336,8 +341,9 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨: 기술 설명 필수 체크 완화)
+# 캐릭터 설명 검증 (수정됨: 기술 파싱 간소화, 예외 처리 강화)
 async def validate_character(description):
+    logger.info(f"Validating character description: {description[:100]}...")
     if len(description) < MIN_LENGTH:
         return False, f"❌ 설명 너무 짧아! 최소 {MIN_LENGTH}자 써줘~ 📝"
 
@@ -378,7 +384,7 @@ async def validate_character(description):
     attributes = {}
     
     for match in matches:
-        print(f"NUMBER_PATTERN match: {match}")
+        logger.info(f"NUMBER_PATTERN match: {match}")
         if match[1]:  # 속성
             value = int(match[1])
             if not (1 <= value <= 6):
@@ -389,19 +395,19 @@ async def validate_character(description):
             if not (1 <= value <= 4):
                 return False, f"❌ 냉철 {value}? 1~4로~ 🧠"
             attributes["냉철"] = value
-        elif match[3] or match[5]:  # 기술
-            skill_name = match[3] if match[3] else match[5]
-            skill_name = skill_name.strip() if skill_name else ""
+        elif match[3]:  # 기술
+            skill_name = match[3].strip()
             if not skill_name or any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
                 continue
-            power = match[4] if match[4] else match[6]
+            power = match[4]
+            skill_desc = match[5].strip() if match[5] else "기본 기술"
             try:
                 value = int(power) if power else 1
                 if not (1 <= value <= 5):
                     return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
-            except (ValueError, TypeError):
-                return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '<{skill_name}> 1' 😅"
-            skill_desc = (match[7] or match[8] or "").strip() or "기본 기술"  # 설명 없으면 기본값
+            except (ValueError, TypeError) as e:
+                logger.error(f"Skill power parsing error for '{skill_name}': {str(e)}")
+                return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '({skill_name}) 1' 😅"
             skill_count += 1
             skills.append({"name": skill_name, "power": value, "description": skill_desc})
 
@@ -422,7 +428,8 @@ async def validate_character(description):
                     value = int(power) if power else 1
                     if not (1 <= value <= 5):
                         return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
-                except (ValueError, TypeError):
+                except (ValueError, TypeError) as e:
+                    logger.error(f"Skill list power parsing error for '{skill_name}': {str(e)}")
                     return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '{skill_name} (위력: 1)' 😅"
                 skill_count += 1
                 skills.append({"name": skill_name, "power": value, "description": skill_desc})
@@ -430,10 +437,9 @@ async def validate_character(description):
     if skill_count > 6:
         return False, f"❌ 기술 {skill_count}개? 최대 6개야~ ⚔️"
 
-    # 로깅 강화
-    print(f"Parsed fields: {field_values}")
-    print(f"Parsed attributes: {attributes}")
-    print(f"Parsed skills: {skills}")
+    logger.info(f"Parsed fields: {field_values}")
+    logger.info(f"Parsed attributes: {attributes}")
+    logger.info(f"Parsed skills: {skills}")
 
     return True, ""
 
@@ -538,6 +544,7 @@ async def process_flex_queue():
                             await log_channel.send(f"작업 완료\n유저: {member}\n타입: {task_type}\n결과: {result}")
 
                     except Exception as e:
+                        logger.error(f"Flex queue processing error: {str(e)}")
                         await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None) if task_type == "character_check" else None
                         if thread:
                             await thread.send(f"❌ 처리 중 오류: {str(e)} 다시 시도해! 🥹")
@@ -547,7 +554,7 @@ async def process_flex_queue():
 
 # 캐릭터 심사 로직
 async def check_character(description, member, guild, thread, force_recheck=False):
-    print(f"캐릭터 검사 시작: {member.name}")
+    logger.info(f"Checking character for {member.name}: {description[:100]}...")
     try:
         if not force_recheck:
             cached_result = await get_result(description)
@@ -620,12 +627,14 @@ async def check_character(description, member, guild, thread, force_recheck=Fals
             await queue_flex_task(str(thread.id), description, str(member.id), str(thread.parent.id), str(thread.id), "character_check", prompt)
             return "⏳ 심사 중! 곧 결과 알려줄게~ 😊"
         except Exception as e:
+            logger.error(f"Queue error: {str(e)}")
             await save_result(str(thread.id), description, False, f"큐 오류: {str(e)}", None)
             return f"❌ 심사 요청 오류: {str(e)} 다시 시도해! 🥹"
 
     except Exception as e:
+        logger.error(f"Validation error: {str(e)}")
         await save_result(str(thread.id), description, False, f"검증 오류: {str(e)}", None)
-        return f"❌ 오류 발생: {str(e)} 나중에 시도해! 🥹"
+        return f"❌ 검증 오류: {str(e)} 나중에 시도해! 🥹"
 
 # 최근 캐릭터 설명 찾기
 async def find_recent_character_description(channel, user):
@@ -654,13 +663,13 @@ async def find_recent_character_description(channel, user):
 @bot.event
 async def on_ready():
     await init_db()
-    print(f'봇 로그인: {bot.user}')
+    logger.info(f'Bot logged in: {bot.user}')
     await bot.tree.sync()
     bot.loop.create_task(process_flex_queue())
 
 @bot.event
 async def on_thread_create(thread):
-    print(f"새 스레드: {thread.name} (부모: {thread.parent.name})")
+    logger.info(f"New thread: {thread.name} (parent: {thread.parent.name})")
     _, check_channel_name = await get_settings(thread.guild.id)
     if thread.parent.name == check_channel_name and not thread.owner.bot:
         try:
@@ -685,6 +694,7 @@ async def on_thread_create(thread):
             await thread.send(f"{message.author.mention} {result}")
 
         except Exception as e:
+            logger.error(f"Thread creation error: {str(e)}")
             await thread.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
@@ -721,6 +731,7 @@ async def feedback(interaction: discord.Interaction, question: str):
         await interaction.followup.send("⏳ 피드백 처리 중! 곧 알려줄게~ 😊")
 
     except Exception as e:
+        logger.error(f"Feedback error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 재검사 명령어
@@ -746,6 +757,7 @@ async def recheck(interaction: discord.Interaction):
             await log_channel.send(f"재검사 요청\n유저: {interaction.user}\n결과: {result}")
 
     except Exception as e:
+        logger.error(f"Recheck error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 질문 명령어
@@ -778,6 +790,7 @@ async def ask_question(interaction: discord.Interaction, question: str):
         await interaction.followup.send("⏳ 질문 처리 중! 곧 답변~ 😊")
 
     except Exception as e:
+        logger.error(f"Question error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 프롬프트 수정 명령어
@@ -806,6 +819,7 @@ async def modify_prompt(interaction: discord.Interaction, new_prompt: str):
             await log_channel.send(f"프롬프트 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n프롬프트: {new_prompt[:100]}...")
 
     except Exception as e:
+        logger.error(f"Modify prompt error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 프롬프트 초기화 명령어
@@ -838,6 +852,7 @@ async def reset_prompt(interaction: discord.Interaction):
             await log_channel.send(f"프롬프트 초기화\n서버: {interaction.guild.name}\n유저: {interaction.user}")
 
     except Exception as e:
+        logger.error(f"Reset prompt error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 역할 수정 명령어
@@ -867,6 +882,7 @@ async def modify_roles(interaction: discord.Interaction, roles: str):
             await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n역할: {', '.join(new_roles)}")
 
     except Exception as e:
+        logger.error(f"Modify roles error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 검사 채널 수정 명령어
@@ -895,6 +911,7 @@ async def modify_check_channel(interaction: discord.Interaction, channel_name: s
             await log_channel.send(f"검사 채널 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n채널: {channel_name}")
 
     except Exception as e:
+        logger.error(f"Modify check channel error: {str(e)}")
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
 # 양식 안내 명령어
@@ -904,7 +921,7 @@ async def format_guide(interaction: discord.Interaction):
     guide = """
     ✅ 캐릭터 양식 예시:
     - 필드: '이름: 값', '이름 : 값', '이름:값' 가능
-    - 기술: <기술명> 1, [기술명] 1, (기술명) 1, {기술명} 1, 【기술명】 1, 《기술명》 1, 〈기술명〉 1, 「기술명」 1, 기술명 1
+    - 기술: <기술명> 1, [기술명] 1, (기술명) 1, {기술명} 1, 【기술명】 1, 《기술명》 1, 〈기술명〉 1, 「기술명」 1
     - 위력: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1'
     - 기술 목록: '사용 기술/마법/요력: 기술명 (위력: 1) 설명'
     - 기술 설명: 같은 줄 또는 다음 줄 (예: <기술명> 1 설명 또는 \n    설명)
@@ -916,8 +933,7 @@ async def format_guide(interaction: discord.Interaction):
     사용 기술/마법/요력:
     - 할퀴기 (위력: 1) 할퀸다.
     또는:
-    <할퀴기> 1
-        할퀸다.
+    (불꽃) 2 손에서 불 발사
     """
     await interaction.followup.send(guide)
 
