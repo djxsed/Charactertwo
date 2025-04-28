@@ -48,15 +48,16 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 숫자 속성 및 기술 체크용 정규 표현식 (수정됨: 설명 캡처 개선)
+# 정규 표현식 (수정됨: 기술 설명 및 양식 호환성 개선)
 NUMBER_PATTERN = (
     r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
     r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
-    # 기술: 필수 필드 제외, 다음 줄 설명 캡처 개선
-    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d))|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d))))\s*(?:[ \t]*([^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)))?"
+    # 기술: 괄호 또는 일반 기술명, 설명 캡처 개선
+    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d)?)|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사|사용 기술\/마법\/요력)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d)?)))\s*(?:[ \t]*([^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)(?!\n)))?"
 )
-AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"  # 띄어쓰기 유무
-FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"  # 필드: 띄어쓰기 유무
+AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"  # 나이
+FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"  # 일반 필드
+SKILL_LIST_PATTERN = r"\b사용 기술\/마법\/요력\s*[:：]\s*([\s\S]*?)(?=\n\s*\w+\s*[:：]|\Z)"  # 기술 목록
 
 # 기본 프롬프트
 DEFAULT_PROMPT = """
@@ -73,43 +74,43 @@ DEFAULT_PROMPT = """
 - 필드 형식: '필드명: 값', '필드명 : 값', '필드명:값' 등 띄어쓰기 및 콜론(: 또는 :) 허용.
 - 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」, 또는 기술명 등.
 - 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등.
-- 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤의 텍스트로 간주.
-- 필드(이름, 나이, 성격, 과거사 등)와 기술은 명확히 구분. 필드는 기술로 오인하지 마.
-- 설명은 현실적이고 역할극에 적합해야 해.
+- 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤 텍스트.
+- 필드(이름, 나이, 성격, 과거사 등)와 기술은 구분. 필드는 기술로 오인 금지.
+- 설명은 현실적, 역할극 적합.
 - 시간/현실 조작 능력 금지.
-- 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
+- 과거사: 시간 여행, 초자연적, 비현실적 사건 금지.
 - 나이: 1~5000살 (이미 확인됨).
-- 소속: A.M.L, 하람고, 하람고등학교만 허용 (동아리 제외).
-- 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~16, 마법사 5~17, 요괴 5~18.
-- 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
-- 기술/마법 위력은 1~5만 허용.
-- 기술/마법/요력은 시간, 범위, 위력 등이 명확해야 하고 너무 크면 안 돼.
-- 기술/마법/요력의 개수는 6개 이상이면 안 돼.
-- 소속이 AML이면 요괴 불가(단, 과거사에 정체 숨김 맥락 있으면 가능).
-- 기술/마법/요력 위력 4~5는 쿨타임과 리스크 필수.
-- 치유/방어 계열은 역으로 계산.
+- 소속: A.M.L, 하람고, 하람고등학교만 허용.
+- 속성 합산: 인간 5~16, 마법사 5~17, 요괴 5~18.
+- 학년 및 반: 'x-y반', 'x학년 y반', 'x/y반' 형식.
+- 기술/마법 위력: 1~5.
+- 기술/마법/요력: 시간, 범위, 위력 명확, 과도 금지.
+- 기술/마법/요력: 최대 6개.
+- AML 소속 시 요괴 불가(정체 숨김 맥락 제외).
+- 위력 4~5는 쿨타임/리스크 필수.
+- 치유/방어 계열 역계산.
 - 정신 계열 능력 불가.
-- 스탯표와 다르면 안 돼.
+- 스탯표 준수.
 - 기술/마법/요력 옆 숫자는 위력.
 
 **역할 판단**:
-1. 소속에 'AML' 또는 'A.M.L' 포함 → AML.
-2. 소속에 '선생' 또는 '선생님' → 선생님.
-3. 소속에 '학생' 또는 괄호 안 학생 → 학생.
-4. 위 조건 미충족 → 실패.
+1. 소속 'AML' 또는 'A.M.L' → AML.
+2. 소속 '선생' 또는 '선생님' → 선생님.
+3. 소속 '학생' 또는 괄호 학생 → 학생.
+4. 미충족 → 실패.
 
 **주의**:
-- AML/선생님 조건 충족 시 학생 판단 불가.
-- 역할은 {allowed_roles} 중 하나만 선택.
-- 역할 모호하면 실패.
+- AML/선생님 조건 시 학생 판단 금지.
+- 역할은 {allowed_roles} 중 하나.
+- 역할 모호 시 실패.
 
 **설정**:
 - 마법 실제 존재.
-- 몇 년 전 사건으로 마법/이종족 인간에 알려짐.
-- 2050년 미래 세계관.
-- 마법사/요괴 공존 의사 표명.
-- 하람고등학교는 학생/요괴/마법사 공존.
-- AML은 하람고 적대, 갈등 부추김.
+- 몇 년 전 사건으로 마법/이종족 공개.
+- 2050년 미래.
+- 마법사/요괴 공존 의사.
+- 하람고등학교: 학생/요괴/마법사 공존.
+- AML: 하람고 적대, 갈등 조장.
 
 **스탯표**:
 지능
@@ -277,7 +278,7 @@ async def save_result(character_id, description, pass_status, reason, role_name)
         """, (character_id, description_hash, pass_status, reason, role_name, timestamp))
         await db.commit()
 
-# 캐릭터 심사 결과 삭제 (새로 추가)
+# 캐릭터 심사 결과 삭제
 async def clear_result(description):
     description_hash = hashlib.md5(description.encode()).hexdigest()
     async with aiosqlite.connect("characters.db") as db:
@@ -326,7 +327,7 @@ async def check_cooldown(user_id):
                 request_count = 0
 
             if request_count >= MAX_REQUESTS_PER_DAY:
-                return False, f"❌ 하루 요청 한도 초과! 최대 {MAX_REQUESTS_PER_DAY}번이야~ 내일 와! 😊"
+                return False, f"❌ 하루 요청 한도 초과! 최대 {MAX_REQUESTS_PER_DAY}번! 내일 와! 😊"
 
             if (now - last_request).total_seconds() < COOLDOWN_SECONDS:
                 return False, f"❌ {COOLDOWN_SECONDS}초 더 기다려! 잠시 쉬어~ 😅"
@@ -336,10 +337,10 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨: 설명 캡처 개선, 로깅 추가)
+# 캐릭터 설명 검증 (수정됨: 예외 처리 강화, 양식 호환)
 async def validate_character(description):
     if len(description) < MIN_LENGTH:
-        return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
+        return False, f"❌ 설명 너무 짧아! 최소 {MIN_LENGTH}자 써줘~ 📝"
 
     # 필수 필드 체크
     found_fields = []
@@ -365,11 +366,11 @@ async def validate_character(description):
         try:
             age = int(field_values["나이"])
             if not (1 <= age <= 5000):
-                return False, f"❌ 나이 {age}살? 1~5000살로 해줘~ 🕰️"
+                return False, f"❌ 나이 {age}살? 1~5000살로~ 🕰️"
         except ValueError:
             return False, f"❌ 나이는 숫자! 예: '나이: 30' 또는 '나이:30' 😄"
     else:
-        return False, f"❌ 나이 써줘! '나이: 숫자' 또는 '나이:숫자'로~ 😄"
+        return False, f"❌ 나이 써줘! '나이: 숫자' 또는 '나이:숫자'~ 😄"
 
     # 기술 및 속성 검증
     matches = re.findall(NUMBER_PATTERN, description, re.MULTILINE)
@@ -378,6 +379,7 @@ async def validate_character(description):
     attributes = {}
     
     for match in matches:
+        print(f"NUMBER_PATTERN match: {match}")  # 디버깅 로그
         if match[1]:  # 속성
             value = int(match[1])
             if not (1 <= value <= 6):
@@ -390,22 +392,51 @@ async def validate_character(description):
             attributes["냉철"] = value
         elif match[3] or match[5]:  # 기술
             skill_name = match[3] if match[3] else match[5]
-            skill_name = skill_name.strip()
-            if any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사"]):
+            skill_name = skill_name.strip() if skill_name else ""
+            if not skill_name or any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
                 continue
-            value = int(match[4] if match[4] else match[6])
+            power = match[4] if match[4] else match[6]
+            try:
+                value = int(power) if power else 1  # 위력 누락 시 기본값 1
+                if not (1 <= value <= 5):
+                    return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
+            except (ValueError, TypeError):
+                return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '<{skill_name}> 1' 😅"
             skill_desc = (match[7] or match[8] or "").strip()
-            if not (1 <= value <= 5):
-                return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
             skill_count += 1
             skills.append({"name": skill_name, "power": value, "description": skill_desc})
             if not skill_desc:
-                return False, f"❌ '{skill_name}' 설명 없어! 같은 줄이나 다음 줄에 써줘~ 📜 예: {skill_name} 위력: {value} 설명"
+                return False, f"❌ '{skill_name}' 설명 없어! 같은 줄이나 다음 줄 써줘~ 📜 예: <{skill_name}> {value} 설명"
+
+    # 기술 목록 필드 처리
+    skill_list_match = re.search(SKILL_LIST_PATTERN, description)
+    if skill_list_match:
+        skill_list = skill_list_match.group(1).strip().split("\n")
+        for skill_line in skill_list:
+            skill_line = skill_line.strip()
+            if not skill_line:
+                continue
+            # 예: "- 기술명 (위력: 1) 설명" 또는 "기술명 위력: 1"
+            skill_match = re.match(r"(?:[-*] )?([^\(]+)(?:\s*\(위력\s*[:：]?\s*(\d)\))?(?:\s*([^\n]*))?", skill_line)
+            if skill_match:
+                skill_name = skill_match.group(1).strip()
+                power = skill_match.group(2)
+                skill_desc = skill_match.group(3).strip() if skill_match.group(3) else ""
+                try:
+                    value = int(power) if power else 1
+                    if not (1 <= value <= 5):
+                        return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
+                except (ValueError, TypeError):
+                    return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '{skill_name} (위력: 1)' 😅"
+                skill_count += 1
+                skills.append({"name": skill_name, "power": value, "description": skill_desc})
+                if not skill_desc:
+                    return False, f"❌ '{skill_name}' 설명 없어! 같은 줄이나 다음 줄 써줘~ 📜 예: {skill_name} (위력: {value}) 설명"
 
     if skill_count > 6:
         return False, f"❌ 기술 {skill_count}개? 최대 6개야~ ⚔️"
 
-    # 로깅 추가
+    # 로깅
     print(f"Parsed fields: {field_values}")
     print(f"Parsed attributes: {attributes}")
     print(f"Parsed skills: {skills}")
@@ -515,12 +546,12 @@ async def process_flex_queue():
                     except Exception as e:
                         await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None) if task_type == "character_check" else None
                         if thread:
-                            await thread.send(f"❌ 처리 중 오류... {str(e)} 다시 시도해! 🥹")
+                            await thread.send(f"❌ 처리 중 오류: {str(e)} 다시 시도해! 🥹")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("failed", task_id))
                         await db.commit()
         await asyncio.sleep(1)
 
-# 캐릭터 심사 로직 (수정됨: 캐시 무효화 옵션)
+# 캐릭터 심사 로직
 async def check_character(description, member, guild, thread, force_recheck=False):
     print(f"캐릭터 검사 시작: {member.name}")
     try:
@@ -576,10 +607,9 @@ async def check_character(description, member, guild, thread, force_recheck=Fals
                             elif race_role_name:
                                 result += f" (종족 `{race_role_name}` 서버에 없어... 관리자 문의! 🤔)"
                 else:
-                    result = f"❌ 이전 실패: {reason} 수정 후 /재검사 해! 💪"
+                    result = f"❌ 이전 실패: {reason} 수정 후 /재검사! 💪"
                 return result
 
-        # 캐시 무효화
         if force_recheck:
             await clear_result(description)
 
@@ -597,11 +627,11 @@ async def check_character(description, member, guild, thread, force_recheck=Fals
             return "⏳ 심사 중! 곧 결과 알려줄게~ 😊"
         except Exception as e:
             await save_result(str(thread.id), description, False, f"큐 오류: {str(e)}", None)
-            return f"❌ 심사 요청 오류... {str(e)} 다시 시도해! 🥹"
+            return f"❌ 심사 요청 오류: {str(e)} 다시 시도해! 🥹"
 
     except Exception as e:
-        await save_result(str(thread.id), description, False, f"오류: {str(e)}", None)
-        return f"❌ 오류 발생... {str(e)} 나중에 시도해! 🥹"
+        await save_result(str(thread.id), description, False, f"검증 오류: {str(e)}", None)
+        return f"❌ 오류 발생: {str(e)} 나중에 시도해! 🥹"
 
 # 최근 캐릭터 설명 찾기
 async def find_recent_character_description(channel, user):
@@ -699,7 +729,7 @@ async def feedback(interaction: discord.Interaction, question: str):
     except Exception as e:
         await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
 
-# 재검사 명령어 (수정됨: 캐시 무효화)
+# 재검사 명령어
 @bot.tree.command(name="재검사", description="최근 캐릭터 다시 심사!")
 async def recheck(interaction: discord.Interaction):
     await interaction.response.defer()
@@ -739,8 +769,8 @@ async def ask_question(interaction: discord.Interaction, question: str):
             return
 
         prompt = f"""
-        역할극 서버 도우미 봇. 질문: {question}
-        규칙 관련 질문은 규칙 설명, 나머지는 서버 관련 재밌는 답변.
+        역할극 서버 도우미. 질문: {question}
+        규칙 질문은 규칙 설명, 나머지는 서버 관련 재밌는 답변.
         50자 내 간단히. 친근 재밌게!
         **규칙**:
         - 금지 단어: {', '.join(BANNED_WORDS)}.
@@ -880,14 +910,19 @@ async def format_guide(interaction: discord.Interaction):
     guide = """
     ✅ 캐릭터 양식 예시:
     - 필드: '이름: 값', '이름 : 값', '이름:값' 가능
-    - 기술: <할퀴기> 1, [할퀴기] 1, (할퀴기) 1, {할퀴기} 1, 【할퀴기】 1, 《할퀴기》 1, 〈할퀴기〉 1, 「할퀴기」 1, 할퀴기 1
+    - 기술: <기술명> 1, [기술명] 1, (기술명) 1, {기술명} 1, 【기술명】 1, 《기술명》 1, 〈기술명〉 1, 「기술명」 1, 기술명 1
     - 위력: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1'
-    - 기술 설명: 같은 줄 또는 다음 줄 (예: <할퀴기> 1 할퀸다. 또는 \n    할퀸다.)
+    - 기술 목록: '사용 기술/마법/요력: 기술명 (위력: 1) 설명'
+    - 기술 설명: 같은 줄 또는 다음 줄 (예: <기술명> 1 설명 또는 \n    설명)
+    - 이전 실패 시: '/재검사'로 새 심사 요청!
     예시:
     이름: 홍길동
-    나이:30
+    나이: 30
     성격: 용감함
-    《할퀴기》 위력: 1
+    사용 기술/마법/요력:
+    - 할퀴기 (위력: 1) 할퀸다.
+    또는:
+    <할퀴기> 1
         할퀸다.
     """
     await interaction.followup.send(guide)
