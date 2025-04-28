@@ -53,7 +53,7 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 정규 표현식 (간소화: 기술 파싱 안정화)
+# 정규 표현식 (수정됨: 기술 파싱 안정화)
 NUMBER_PATTERN = (
     r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
     r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
@@ -341,7 +341,7 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨: 기술 파싱 간소화, 예외 처리 강화)
+# 캐릭터 설명 검증 (수정됨: 기술 파싱 개선, 예외 처리 강화)
 async def validate_character(description):
     logger.info(f"Validating character description: {description[:100]}...")
     if len(description) < MIN_LENGTH:
@@ -378,29 +378,35 @@ async def validate_character(description):
         return False, f"❌ 나이 써줘! '나이: 숫자' 또는 '나이:숫자'~ 😄"
 
     # 기술 및 속성 검증
-    matches = re.findall(NUMBER_PATTERN, description, re.MULTILINE)
+    matches = re.finditer(NUMBER_PATTERN, description, re.MULTILINE)  # finditer로 매칭 위치 추적
     skill_count = 0
     skills = []
     attributes = {}
     
     for match in matches:
-        logger.info(f"NUMBER_PATTERN match: {match}")
-        if match[1]:  # 속성
-            value = int(match[1])
+        logger.info(f"NUMBER_PATTERN match: {match.group()} at position {match.start()}-{match.end()}")
+        if match.group(1):  # 속성 (체력, 지능, 이동속도, 힘)
+            value = int(match.group(2))
             if not (1 <= value <= 6):
-                return False, f"❌ '{match[0]}' {value}? 1~6으로~ 💪"
-            attributes[match[0]] = value
-        elif match[2]:  # 냉철
-            value = int(match[2])
+                return False, f"❌ '{match.group(1)}' {value}? 1~6으로~ 💪"
+            attributes[match.group(1)] = value
+        elif match.group(3):  # 냉철
+            value = int(match.group(3))
             if not (1 <= value <= 4):
                 return False, f"❌ 냉철 {value}? 1~4로~ 🧠"
             attributes["냉철"] = value
-        elif match[3]:  # 기술
-            skill_name = match[3].strip()
+        elif match.group(4):  # 기술
+            skill_name = match.group(4).strip()
+            # 기술명이 필드명과 겹치거나 비어 있는 경우 스킵
             if not skill_name or any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
+                logger.info(f"Skipping skill '{skill_name}' due to invalid name or overlap with field")
                 continue
-            power = match[4]
-            skill_desc = match[5].strip() if match[5] else "기본 기술"
+            power = match.group(5)
+            skill_desc = match.group(6).strip() if match.group(6) else "기본 기술"
+            # 기술 설명이 기술명으로 잘못 파싱되지 않도록 추가 검증
+            if skill_desc and any(field.lower() in skill_desc.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
+                logger.info(f"Adjusting skill description for '{skill_name}': {skill_desc} might be a field, setting to default")
+                skill_desc = "기본 기술"
             try:
                 value = int(power) if power else 1
                 if not (1 <= value <= 5):
