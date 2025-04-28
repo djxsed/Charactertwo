@@ -48,16 +48,15 @@ DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 정규 표현식 (수정됨: 기술 설명 및 양식 호환성 개선)
+# 정규 표현식 (수정됨: 기술 설명 캡처 개선)
 NUMBER_PATTERN = (
     r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
     r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
-    # 기술: 괄호 또는 일반 기술명, 설명 캡처 개선
-    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:(?:위력\s*[:：]?\s*)?(\d)?)|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사|사용 기술\/마법\/요력)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:(?:위력\s*[:：]?\s*)?(\d)?)))\s*(?:[ \t]*([^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)(?!\n)))?"
+    r"(?:(?:[<\[({【《〈「])([^\]\)>}】》〉」\n]+)(?:[>\]\)}】》〉」])\s*(?:위력\s*[:：]?\s*(\d)?)?)|(?:^(?!.*\b(?:이름|나이|성격|소속|종족|키\/몸무게|과거사|사용 기술\/마법\/요력)\b)([^\]\)>}【《〈「\n\s][^\n]*?)\s*(?:위력\s*[:：]?\s*(\d)?)?)(?:\s*([^\n<>\[\]\(\)\{\}【《〈」]+)|(?:\n\s*([^\n<>\[\]\(\)\{\}【《〈」]+)(?!\n)))?"
 )
-AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"  # 나이
-FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"  # 일반 필드
-SKILL_LIST_PATTERN = r"\b사용 기술\/마법\/요력\s*[:：]\s*([\s\S]*?)(?=\n\s*\w+\s*[:：]|\Z)"  # 기술 목록
+AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"
+FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"
+SKILL_LIST_PATTERN = r"\b사용 기술\/마법\/요력\s*[:：]\s*([\s\S]*?)(?=\n\s*\w+\s*[:：]|\Z)"
 
 # 기본 프롬프트
 DEFAULT_PROMPT = """
@@ -337,7 +336,7 @@ async def check_cooldown(user_id):
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨: 예외 처리 강화, 양식 호환)
+# 캐릭터 설명 검증 (수정됨: 기술 설명 필수 체크 완화)
 async def validate_character(description):
     if len(description) < MIN_LENGTH:
         return False, f"❌ 설명 너무 짧아! 최소 {MIN_LENGTH}자 써줘~ 📝"
@@ -379,7 +378,7 @@ async def validate_character(description):
     attributes = {}
     
     for match in matches:
-        print(f"NUMBER_PATTERN match: {match}")  # 디버깅 로그
+        print(f"NUMBER_PATTERN match: {match}")
         if match[1]:  # 속성
             value = int(match[1])
             if not (1 <= value <= 6):
@@ -397,16 +396,14 @@ async def validate_character(description):
                 continue
             power = match[4] if match[4] else match[6]
             try:
-                value = int(power) if power else 1  # 위력 누락 시 기본값 1
+                value = int(power) if power else 1
                 if not (1 <= value <= 5):
                     return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
             except (ValueError, TypeError):
                 return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '<{skill_name}> 1' 😅"
-            skill_desc = (match[7] or match[8] or "").strip()
+            skill_desc = (match[7] or match[8] or "").strip() or "기본 기술"  # 설명 없으면 기본값
             skill_count += 1
             skills.append({"name": skill_name, "power": value, "description": skill_desc})
-            if not skill_desc:
-                return False, f"❌ '{skill_name}' 설명 없어! 같은 줄이나 다음 줄 써줘~ 📜 예: <{skill_name}> {value} 설명"
 
     # 기술 목록 필드 처리
     skill_list_match = re.search(SKILL_LIST_PATTERN, description)
@@ -416,12 +413,11 @@ async def validate_character(description):
             skill_line = skill_line.strip()
             if not skill_line:
                 continue
-            # 예: "- 기술명 (위력: 1) 설명" 또는 "기술명 위력: 1"
             skill_match = re.match(r"(?:[-*] )?([^\(]+)(?:\s*\(위력\s*[:：]?\s*(\d)\))?(?:\s*([^\n]*))?", skill_line)
             if skill_match:
                 skill_name = skill_match.group(1).strip()
                 power = skill_match.group(2)
-                skill_desc = skill_match.group(3).strip() if skill_match.group(3) else ""
+                skill_desc = skill_match.group(3).strip() if skill_match.group(3) else "기본 기술"
                 try:
                     value = int(power) if power else 1
                     if not (1 <= value <= 5):
@@ -430,13 +426,11 @@ async def validate_character(description):
                     return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '{skill_name} (위력: 1)' 😅"
                 skill_count += 1
                 skills.append({"name": skill_name, "power": value, "description": skill_desc})
-                if not skill_desc:
-                    return False, f"❌ '{skill_name}' 설명 없어! 같은 줄이나 다음 줄 써줘~ 📜 예: {skill_name} (위력: {value}) 설명"
 
     if skill_count > 6:
         return False, f"❌ 기술 {skill_count}개? 최대 6개야~ ⚔️"
 
-    # 로깅
+    # 로깅 강화
     print(f"Parsed fields: {field_values}")
     print(f"Parsed attributes: {attributes}")
     print(f"Parsed skills: {skills}")
