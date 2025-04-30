@@ -1,21 +1,29 @@
 import discord
 from discord.ext import commands
 import os
+import json
 import aiosqlite
 import re
 from openai import OpenAI
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import uuid
 import asyncio
-from collections import deque
+import time
 from flask import Flask
 import threading
 import logging
 
 # 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Flask 웹 서버 설정
@@ -31,7 +39,14 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # OpenAI API 설정
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+try:
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY가 .env 파일에 없어!")
+    openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    logger.info("OpenAI 클라이언트 초기화 성공")
+except Exception as e:
+    logger.error(f"OpenAI 클라이언트 초기화 실패: {str(e)}")
+    raise
 
 # 봇 설정
 intents = discord.Intents.default()
@@ -79,7 +94,37 @@ async def init_db():
                 reset_date TEXT
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS flex_tasks (
+                task_id TEXT PRIMARY KEY,
+                character_id TEXT,
+                description TEXT,
+                user_id TEXT,
+                channel_id TEXT,
+                thread_id TEXT,
+                type TEXT,
+                prompt TEXT,
+                status TEXT,
+                result TEXT,
+                created_at TEXT
+            )
+        """)
         await db.commit()
+
+# 서버별 설정 조회
+async def get_settings(guild_id):
+    try:
+        async with aiosqlite.connect("characters.db") as db:
+            async with db.execute("SELECT allowed_roles, check_channel_name FROM settings WHERE guild_id = ?", (str(guild_id),)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    allowed_roles = row[0].split(",") if row[0] else ALLOWED_ROLES
+                    check_channel_name = row[1] if row[1] else CHECK_CHANNEL_NAME
+                    return allowed_roles, check_channel_name
+                return ALLOWED_ROLES, CHECK_CHANNEL_NAME
+    except Exception as e:
+        logger.error(f"설정 조회 실패: guild_id={guild_id}, error={str(e)}")
+        return ALLOWED_ROLES, CHECK_CHANNEL_NAME
 
 # 쿨다운 및 요청 횟수 체크
 async def check_cooldown(user_id):
@@ -122,6 +167,24 @@ async def save_character(character_id, user_id, guild_id, description, role_name
             VALUES (?, ?, ?, ?, ?, ?)
         """, (character_id, user_id, guild_id, description, role_name, timestamp))
         await db.commit()
+
+# 캐릭터 심사 결과 저장
+async def save_character_result(character_id: str, description: str, pass_status: bool, reason: str, role_name: str):
+    try:
+        description_hash = hashlib.md5(description.encode()).hexdigest()
+        timestamp = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect("characters.db") as db:
+            await db.execute(
+                """
+                INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (character_id, description_hash, pass_status, reason, role_name, timestamp)
+            )
+            await db.commit()
+            logger.info(f"캐릭터 심사 결과 저장: character_id={character_id}, pass={pass_status}")
+    except Exception as e:
+        logger.error(f"캐릭터 결과 저장 실패: character_id={character_id}, error={str(e)}")
 
 # 답변 검증 함수
 async def validate_answer(field, value, character_data):
@@ -235,10 +298,294 @@ async def validate_answer(field, value, character_data):
 
     return True, ""
 
-# OpenAI로 최종 검증
-async def validate_with_openai(character_data, guild_id):
-    allowed_roles = ALLOWED_ROLES
-    description = "\n".join([f"{k}: {v}" for k, v in character_data.items()])
+# Batch 작업 관련 함수
+async def queue_batch_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
+    task_id = str(uuid.uuid4())
+    created_at = datetime.utcnow().isoformat()
+    async with aiosqlite.connect("characters.db") as db:
+        await db.execute("""
+            INSERT INTO flex_tasks (task_id, character_id, description, user_id, channel_id, thread_id, type, prompt, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?,66 ?, ?, ?)
+        """, (task_id, character_id, description, user_id, channel_id, thread_id, task_type, prompt, "pending", created_at))
+        await db.commit()
+    logger.info(f"Batch 작업 큐에 추가: task_id={task_id}, type={task_type}")
+    return task_id
+
+async def update_task_status(task_id: str, status: str, result: dict = None):
+    try:
+        async with aiosqlite.connect("characters.db") as db:
+            if result:
+                await db.execute(
+                    "UPDATE flex_tasks SET status = ?, result = ? WHERE task_id = ?",
+                    (status, json.dumps(result), task_id)
+                )
+            else:
+                await db.execute(
+                    "UPDATE flex_tasks SET status = ? WHERE task_id = ?",
+                    (status, task_id)
+                )
+            await db.commit()
+            logger.info(f"작업 상태 업데이트: task_id={task_id}, status={status}")
+    except Exception as e:
+        logger.error(f"작업 상태 업데이트 실패: task_id={task_id}, error={str(e)}")
+
+async def get_pending_tasks():
+    try:
+        async with aiosqlite.connect("characters.db") as db:
+            async with db.execute("""
+                SELECT task_id, character_id, description, user_id, channel_id, thread_id, type, prompt
+                FROM flex_tasks WHERE status = 'pending' LIMIT 50
+            """) as cursor:
+                tasks = await cursor.fetchall()
+                logger.info(f"가져온 대기 중인 작업 수: {len(tasks)}")
+                return tasks
+    except Exception as e:
+        logger.error(f"작업 가져오기 실패: {str(e)}")
+        return []
+
+def create_jsonl_file(tasks: list, filename: str):
+    try:
+        with open(filename, "w", encoding="utf-8") as f:
+            for task in tasks:
+                task_id, _, _, _, _, _, task_type, prompt = task
+                request = {
+                    "custom_id": task_id,
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": "gpt-4.1-nano",
+                        "messages": [
+                            {"role": "system", "content": "You are a Discord bot for character review."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": 150
+                    }
+                }
+                f.write(json.dumps(request) + "\n")
+        logger.info(f".jsonl 파일 생성: {filename}")
+    except Exception as e:
+        logger.error(f".jsonl 파일 생성 실패: {str(e)}")
+        raise
+
+async def process_batch():
+    logger.info("Batch 처리 시작")
+    while True:
+        try:
+            tasks = await get_pending_tasks()
+            if not tasks:
+                logger.info("대기 중인 작업이 없습니다. 30초 대기...")
+                await asyncio.sleep(30)
+                continue
+
+            jsonl_filename = f"batch_{int(time.time())}.jsonl"
+            create_jsonl_file(tasks, jsonl_filename)
+
+            try:
+                with open(jsonl_filename, "rb") as f:
+                    file_response = openai_client.files.create(file=f, purpose="batch")
+                file_id = file_response.id
+                logger.info(f"파일 업로드 성공: file_id={file_id}")
+
+                batch_response = openai_client.batches.create(
+                    input_file_id=file_id,
+                    endpoint="/v1/chat/completions",
+                    completion_window="24h",
+                    metadata={"description": "Character review batch"}
+                )
+                batch_id = batch_response.id
+                logger.info(f"Batch 작업 생성: batch_id={batch_id}")
+
+                for task in tasks:
+                    task_id = task[0]
+                    await update_task_status(task_id, "processing")
+
+                while True:
+                    batch_status = openai_client.batches.retrieve(batch_id)
+                    logger.info(f"Batch 상태: batch_id={batch_id}, status={batch_status.status}")
+                    if batch_status.status in ["completed", "failed"]:
+                        break
+                    await asyncio.sleep(15)
+
+                if batch_status.status == "failed":
+                    logger.error(f"Batch 실패: batch_id={batch_id}, errors={batch_status.errors}")
+                    for task in tasks:
+                        task_id, _, _, user_id, channel_id, thread_id, task_type, _ = task
+                        await update_task_status(task_id, "failed", {"error": "Batch 작업 실패"})
+                        await send_discord_message(
+                            channel_id, thread_id, user_id,
+                            f"❌ 앗, Batch 처리 중 오류가 났어... 다시 시도해줄래? 🥺"
+                        )
+                    continue
+
+                output_file_id = batch_status.output_file_id
+                output_content = openai_client.files.content(output_file_id).text
+                results = [json.loads(line) for line in output_content.splitlines()]
+                logger.info(f"Batch 결과 가져옴: {len(results)}개 작업")
+
+                for result in results:
+                    task_id = result["custom_id"]
+                    task = next((t for t in tasks if t[0] == task_id), None)
+                    if not task:
+                        logger.warning(f"작업을 찾을 수 없음: task_id={task_id}")
+                        continue
+
+                    _, character_id, description, user_id, channel_id, thread_id, task_type, _ = task
+
+                    if "error" in result:
+                        error_message = result["error"]["message"]
+                        logger.error(f"작업 오류: task_id={task_id}, error={error_message}")
+                        await update_task_status(task_id, "failed", {"error": error_message})
+                        if task_type == "character_check":
+                            await save_character_result(character_id, description, False, f"오류: {error_message}", None)
+                            await send_discord_message(
+                                channel_id, thread_id, user_id,
+                                f"❌ 앗, 심사 중 오류가 났어: {error_message} 😓"
+                            )
+                        continue
+
+                    response = result["response"]["body"]["choices"][0]["message"]["content"]
+                    await update_task_status(task_id, "completed", {"response": response})
+
+                    if task_type == "character_check":
+                        pass_status = "✅" in response
+                        role_name = None
+                        reason = response.replace("✅", "").replace("❌", "").strip()
+                        guild_id = int(channel_id.split("-")[0]) if "-" in channel_id else int(channel_id)
+                        allowed_roles, _ = await get_settings(guild_id)
+
+                        if pass_status:
+                            for role in allowed_roles:
+                                if f"역할: {role}" in response:
+                                    role_name = role
+                                    break
+                            if not role_name or role_name not in allowed_roles:
+                                await save_character_result(character_id, description, False, f"유효한 역할 없음 (허용된 역할: {', '.join(allowed_roles)})", None)
+                                message = f"❌ 앗, 유효한 역할이 없네! {', '.join(allowed_roles)} 중 하나로 설정해줘~ 😊"
+                            else:
+                                await save_character_result(character_id, description, True, "통과", role_name)
+                                message = f"🎉 우와, 대단해! 통과했어~ 역할: {role_name} 🎊"
+                        else:
+                            await save_character_result(character_id, description, False, reason, None)
+                            message = f"❌ 아쉽게도... {reason} 다시 수정해서 도전해봐! 내가 응원할게~ 💪"
+
+                        if pass_status and role_name:
+                            try:
+                                guild = bot.get_guild(guild_id) or await bot.fetch_guild(guild_id)
+                                if guild:
+                                    member = await guild.fetch_member(int(user_id))
+                                    has_role = False
+                                    role = discord.utils.get(guild.roles, name=role_name)
+                                    if role and role in member.roles:
+                                        has_role = True
+
+                                    race_role_name = None
+                                    race_role = None
+                                    if "인간" in description:
+                                        race_role_name = "인간"
+                                    elif "마법사" in description:
+                                        race_role_name = "마법사"
+                                    elif "요괴" in description:
+                                        race_role_name = "요괴"
+
+                                    if race_role_name:
+                                        race_role = discord.utils.get(guild.roles, name=race_role_name)
+                                        if race_role and race_role in member.roles:
+                                            has_role = True
+
+                                    if has_role:
+                                        message = "🎉 이미 통과된 캐릭터야~ 역할은 이미 있어! 🎊"
+                                    else:
+                                        if role:
+                                            try:
+                                                await member.add_roles(role)
+                                                message += f" (역할 `{role_name}` 부여했어! 😊)"
+                                            except discord.Forbidden:
+                                                message += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                        else:
+                                            message += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+                                        if race_role:
+                                            try:
+                                                await member.add_roles(race_role)
+                                                message += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
+                                            except discord.Forbidden:
+                                                message += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                                        elif race_role_name:
+                                            message += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+                                else:
+                                    message += " (서버를 찾을 수 없어... 🥺)"
+                            except Exception as e:
+                                message += f" (역할 부여 실패: {str(e)} 🥺)"
+                                logger.error(f"역할 부여 실패: user_id={user_id}, role={role_name}, error={str(e)}")
+
+                        await send_discord_message(channel_id, thread_id, user_id, message)
+
+                log_channel = bot.get_channel(LOG_CHANNEL_ID)
+                if log_channel:
+                    try:
+                        await log_channel.send(f"Batch {batch_id} 완료: {len(results)}개 작업 처리")
+                        logger.info(f"Batch 완료 로그 전송: batch_id={batch_id}")
+                    except Exception as e:
+                        logger.error(f"Batch 완료 로그 전송 실패: {str(e)}")
+
+            except Exception as e:
+                logger.error(f"Batch 처리 중 오류: {str(e)}")
+                for task in tasks:
+                    task_id, _, _, user_id, channel_id, thread_id, task_type, _ = task
+                    await update_task_status(task_id, "failed", {"error": str(e)})
+                    await send_discord_message(
+                        channel_id, thread_id, user_id,
+                        f"❌ 앗, 처리 중 오류가 났어: {str(e)} 다시 시도해줄래? 🥺"
+                    )
+                log_channel = bot.get_channel(LOG_CHANNEL_ID)
+                if log_channel:
+                    try:
+                        await log_channel.send(f"Batch 처리 오류: {str(e)}")
+                    except Exception as log_error:
+                        logger.error(f"Batch 오류 로그 전송 실패: {str(log_error)}")
+
+            finally:
+                if os.path.exists(jsonl_filename):
+                    try:
+                        os.remove(jsonl_filename)
+                        logger.info(f".jsonl 파일 삭제: {jsonl_filename}")
+                    except Exception as e:
+                        logger.error(f".jsonl 파일 삭제 실패: {str(e)}")
+
+        except Exception as e:
+            logger.error(f"Batch 처리 루프 오류: {str(e)}")
+            await asyncio.sleep(60)
+
+async def send_discord_message(channel_id: str, thread_id: str, user_id: str, message: str):
+    try:
+        channel = bot.get_channel(int(channel_id)) or await bot.fetch_channel(int(channel_id))
+        if not channel:
+            raise ValueError(f"채널을 찾을 수 없음: channel_id={channel_id}")
+
+        if thread_id:
+            thread = channel.get_thread(int(thread_id)) or await bot.fetch_channel(int(thread_id))
+            if not thread:
+                raise ValueError(f"스레드를 찾을 수 없음: thread_id={thread_id}")
+            await thread.send(f"<@{user_id}> {message}")
+            logger.info(f"스레드에 메시지 전송: thread_id={thread_id}, user_id={user_id}")
+        else:
+            await channel.send(f"<@{user_id}> {message}")
+            logger.info(f"채널에 메시지 전송: channel_id={channel_id}, user_id={user_id}")
+    except Exception as e:
+        logger.error(f"디스코드 메시지 전송 실패: channel_id={channel_id}, thread_id={thread_id}, error={str(e)}")
+        log_channel = bot.get_channel(LOG_CHANNEL_ID)
+        if log_channel:
+            try:
+                await log_channel.send(f"디스코드 메시지 전송 오류: {str(e)}")
+            except Exception as log_error:
+                logger.error(f"로그 채널 메시지 전송 실패: {str(log_error)}")
+
+# OpenAI 프롬프트 생성
+async def create_openai_prompt(character_data, guild_id):
+    allowed_roles, _ = await get_settings(guild_id)
+    description = "\n".join([f"{k}: {v}" for k, v in character_data.items() if k != "사용 기술/마법/요력"] + [
+        f"사용 기술/마법/요력: {skill['name']} (위력: {skill['power']}) {skill['description']}" for skill in character_data.get("사용 기술/마법/요력", [])
+    ])
     prompt = f"""
     디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
     1. 서버 규칙에 맞는지 판단해.
@@ -267,20 +614,7 @@ async def validate_with_openai(character_data, guild_id):
     - 통과: "✅ 역할: [역할]"
     - 실패: "❌ [실패 이유]"
     """
-    try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4.1-nano",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=50
-        )
-        result = response.choices[0].message.content.strip()
-        pass_status = result.startswith("✅")
-        role_name = result.split("역할: ")[1] if pass_status else None
-        reason = result[2:] if not pass_status else "통과"
-        return pass_status, reason, role_name
-    except Exception as e:
-        logger.error(f"OpenAI error: {str(e)}")
-        return False, f"OpenAI 오류: {str(e)}", None
+    return prompt
 
 # 캐릭터 신청 프로세스
 async def character_application(interaction: discord.Interaction):
@@ -316,7 +650,6 @@ async def character_application(interaction: discord.Interaction):
         {"field": "관계", "prompt": "캐릭터의 관계는? (10자 이상, 없으면 '없음') 👥"},
     ]
 
-    # DM 채널 생성
     try:
         dm_channel = await user.create_dm()
         await interaction.response.send_message("📬 DM으로 질문 보냈어! 거기서 답해~ 😊", ephemeral=True)
@@ -331,18 +664,16 @@ async def character_application(interaction: discord.Interaction):
         prompt = question["prompt"]
         condition = question.get("condition", lambda x: True)
 
-        # 조건부 질문 스킵
         if not condition(character_data):
             question_index += 1
             continue
 
-        # 기술 추가 여부 처리
         if field == "사용 기술/마법/요력 추가 여부" and len(skills) >= MAX_SKILLS:
             question_index += 1
             continue
 
         await dm_channel.send(prompt)
-        
+
         def check(m):
             return m.author == user and m.channel == dm_channel
 
@@ -350,16 +681,14 @@ async def character_application(interaction: discord.Interaction):
             message = await bot.wait_for("message", check=check, timeout=TIMEOUT_SECONDS)
             answer = message.content.strip()
         except asyncio.TimeoutError:
-            await dm_channel.send(f"❌ {TIMEOUT_SECONDS}초 동안 답이 없어! 다시 시작하려면 /캐릭터_신청 입력해~ 😊")
+            await dm_channel.send(f"❌ {TIMEOUT_SECONDS}초 동안 답이 없어! 다시 시작하려면 /캐릭터신청 입력해~ 😊")
             return
 
-        # 답변 검증
         is_valid, error_message = await validate_answer(field, answer, character_data)
         if not is_valid:
             await dm_channel.send(error_message)
             continue
 
-        # 기술 관련 처리
         if field == "사용 기술/마법/요력":
             current_skill["name"] = answer
         elif field == "사용 기술/마법/요력의 위력":
@@ -380,69 +709,37 @@ async def character_application(interaction: discord.Interaction):
 
         question_index += 1
 
-    # 속성 합산 검증
     attributes = ["체력", "지능", "이동속도", "힘"]
     total = sum(int(character_data.get(attr, 0)) for attr in attributes)
     race = character_data.get("종족", "")
-    if race == "인간" and not (5 <= total <= 18):
+    if race == "인간" and not (5 <= total <= 16):
         await dm_channel.send(f"❌ 인간 속성 합산 {total}? 5~16으로 맞춰! 다시 처음부터~ 😅")
         return
-    if race == "마법사" and not (5 <= total <= 19):
+    if race == "마법사" and not (5 <= total <= 17):
         await dm_channel.send(f"❌ 마법사 속성 합산 {total}? 5~17로 맞춰! 다시 처음부터~ 😅")
         return
-    if race == "요괴" and not (5 <= total <= 20):
+    if race == "요괴" and not (5 <= total <= 18):
         await dm_channel.send(f"❌ 요괴 속성 합산 {total}? 5~18로 맞춰! 다시 처음부터~ 😅")
         return
 
-    # OpenAI 최종 검증
-    pass_status, reason, role_name = await validate_with_openai(character_data, guild.id)
-    if not pass_status:
-        await dm_channel.send(f"❌ 심사 실패: {reason} 수정 후 /캐릭터_신청 다시 시도~ 😊")
+    prompt = await create_openai_prompt(character_data, guild.id)
+    description = "\n".join([f"{k}: {v}" for k, v in character_data.items() if k != "사용 기술/마법/요력"] + [
+        f"사용 기술/마법/요력: {skill['name']} (위력: {skill['power']}) {skill['description']}" for skill in character_data.get("사용 기술/마법/요력", [])
+    ])
+
+    await queue_batch_task(
+        character_id, description, str(user.id), str(dm_channel.id), None, "character_check", prompt
+    )
+    await dm_channel.send("⏳ 심사 중! 곧 결과 알려줄게~ 😊")
+
+    # 캐릭터 목록 채널에 포스트 (Batch 처리 후 이동)
+    list_channel = discord.utils.get(guild.text_channels, name=CHARACTER_LIST_CHANNEL)
+    if not list_channel:
+        await dm_channel.send(f"❌ '{CHARACTER_LIST_CHANNEL}' 채널을 못 찾았어! 관리자 문의~ 😅")
         return
 
-    # 역할 부여
-    try:
-        member = guild.get_member(user.id)
-        role = discord.utils.get(guild.roles, name=role_name)
-        if role and role not in member.roles:
-            await member.add_roles(role)
-        race_role_name = character_data["종족"]
-        race_role = discord.utils.get(guild.roles, name=race_role_name)
-        if race_role and race_role not in member.roles:
-            await member.add_roles(race_role)
-    except discord.Forbidden:
-        await dm_channel.send("❌ 역할 부여 실패! 관리자 권한 확인해~ 😅")
-
-    # 캐릭터 목록 채널에 포스트
-    description = f"**유저**: {user.mention}\n"
-    for field in character_data:
-        if field == "사용 기술/마법/요력":
-            description += f"{field}:\n"
-            for skill in character_data[field]:
-                description += f"- {skill['name']} (위력: {skill['power']}) {skill['description']}\n"
-        else:
-            description += f"{field}: {character_data[field]}\n"
-
-    try:
-        list_channel = discord.utils.get(guild.text_channels, name=CHARACTER_LIST_CHANNEL)
-        if list_channel:
-            await list_channel.send(description)
-        else:
-            await dm_channel.send(f"❌ '{CHARACTER_LIST_CHANNEL}' 채널을 못 찾았어! 관리자 문의~ 😅")
-    except discord.Forbidden:
-        await dm_channel.send(f"❌ '{CHARACTER_LIST_CHANNEL}' 채널에 포스트 권한 없어! 관리자 문의~ 😅")
-
-    # 데이터베이스 저장
-    await save_character(character_id, str(user.id), str(guild.id), description, role_name)
-    await dm_channel.send(f"🎉 캐릭터 심사 통과! 역할: {role_name} 역극 즐겨~ 🎊")
-
-    # 로그 기록
-    log_channel = bot.get_channel(LOG_CHANNEL_ID)
-    if log_channel:
-        await log_channel.send(f"캐릭터 신청 완료\n유저: {user}\n역할: {role_name}\n설명: {description[:100]}...")
-
 # 명령어 정의
-@bot.tree.command(name="캐릭터_신청", description="새 캐릭터를 신청해! DM으로 질문 보낼게~ 😊")
+@bot.tree.command(name="캐릭터신청", description="새 캐릭터를 신청해! DM으로 질문 보낼게~ 😊")
 async def character_apply(interaction: discord.Interaction):
     can_proceed, error_message = await check_cooldown(str(interaction.user.id))
     if not can_proceed:
@@ -455,9 +752,17 @@ async def character_apply(interaction: discord.Interaction):
 async def on_ready():
     await init_db()
     logger.info(f'Bot logged in: {bot.user}')
-    await bot.tree.sync()
+    try:
+        synced = await bot.tree.sync()
+        logger.info(f"명령어 동기화 완료: {len(synced)}개 명령어 등록")
+    except Exception as e:
+        logger.error(f"명령어 동기화 실패: {str(e)}")
+    bot.loop.create_task(process_batch())
 
 # Flask와 디스코드 봇 실행
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
+    if not DISCORD_TOKEN:
+        logger.error("DISCORD_TOKEN이 .env 파일에 없어!")
+        raise ValueError("DISCORD_TOKEN이 .env 파일에 없어!")
     bot.run(DISCORD_TOKEN)
