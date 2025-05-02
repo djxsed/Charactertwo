@@ -13,7 +13,6 @@ from collections import deque
 from flask import Flask
 import threading
 import time
-import aiohttp
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -73,6 +72,10 @@ DEFAULT_PROMPT = """
 - 나이: 1~5000살 (이미 확인됨).
 - 소속: A.M.L, 하람고, 하람고등학교만 허용.
 - 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~16, 마법사 5~17, 요괴 5~18.
+- 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
+- 기술/마법/요력 위력은 1~5만 허용.
+- 기술/마법/요력은 시간, 범위, 위력 등이 명확해야 함.
+- 기술/마법/요력 개수는 6개 이하.
 
 **역할 판단**:
 1. 소속에 'AML' 포함 → AML.
@@ -127,6 +130,32 @@ questions = [
         "error_message": "성격 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."
     },
     {
+        "field": "외모 글묘사",
+        "prompt": "외모를 설명해주세요. (최소 20자)",
+        "validator": lambda x: len(x) >= 20,
+        "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."
+    },
+    {
+        "field": "소속",
+        "prompt": "소속을 입력해주세요. (학생, 선생님, A.M.L 중 하나)",
+        "validator": lambda x: x in ["학생", "선생님", "A.M.L"],
+        "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."
+    },
+    {
+        "field": "학생_학년_반",
+        "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)",
+        "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x),
+        "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.",
+        "condition": lambda answers: answers.get("소속") == "학생"
+    },
+    {
+        "field": "선생님_담당_과목_학년_반",
+        "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)",
+        "validator": lambda x: len(x) > 0,
+        "error_message": "담당 과목과 학년, 반을 입력해주세요.",
+        "condition": lambda answers: answers.get("소속") == "선생님"
+    },
+    {
         "field": "체력",
         "prompt": "체력 수치를 입력해주세요. (1~6)",
         "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6,
@@ -157,10 +186,31 @@ questions = [
         "error_message": "냉철은 1에서 4 사이의 숫자여야 합니다."
     },
     {
-        "field": "기술/마법/요력",
-        "prompt": "기술/마법/요력을 설명해주세요. (위력 1~5)",
+        "field": "사용 기술/마법/요력",
+        "prompt": "사용 기술/마법/요력을 입력해주세요.",
         "validator": lambda x: len(x) > 0,
-        "error_message": "기술/마법/요력을 입력해주세요."
+        "error_message": "사용 기술/마법/요력을 입력해주세요.",
+        "is_tech": True
+    },
+    {
+        "field": "사용 기술/마법/요력 위력",
+        "prompt": "사용 기술/마법/요력의 위력을 입력해주세요. (1~5)",
+        "validator": lambda x: x.isdigit() and 1 <= int(x) <= 5,
+        "error_message": "위력은 1에서 5 사이의 숫자여야 합니다.",
+        "is_tech": True
+    },
+    {
+        "field": "사용 기술/마법/요력 설명",
+        "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)",
+        "validator": lambda x: len(x) >= 20,
+        "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.",
+        "is_tech": True
+    },
+    {
+        "field": "사용 기술/마법/요력 추가 여부",
+        "prompt": "기술/마법/요력을 추가하시겠습니까? (예/아니요)",
+        "validator": lambda x: x in ["예", "아니요"],
+        "error_message": "예 또는 아니요로 입력해주세요."
     },
     {
         "field": "과거사",
@@ -169,10 +219,16 @@ questions = [
         "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."
     },
     {
-        "field": "소속",
-        "prompt": "소속을 입력해주세요. (A.M.L, 하람고, 하람고등학교 중 하나)",
-        "validator": lambda x: x in ["A.M.L", "하람고", "하람고등학교"],
-        "error_message": "허용되지 않은 소속입니다. A.M.L, 하람고, 하람고등학교 중에서 선택해주세요."
+        "field": "특징",
+        "prompt": "특징을 설명해주세요. (최소 10자)",
+        "validator": lambda x: len(x) >= 10,
+        "error_message": "특징 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."
+    },
+    {
+        "field": "관계",
+        "prompt": "관계를 설명해주세요. (없으면 '없음' 입력)",
+        "validator": lambda x: True,
+        "error_message": ""
     },
 ]
 
@@ -299,6 +355,12 @@ def validate_all(answers):
         errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "마법사의 속성 합계는 5~17이어야 합니다."))
     elif race == "요괴" and not (5 <= attr_sum <= 18):
         errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "요괴의 속성 합계는 5~18이어야 합니다."))
+    
+    # 기술/마법/요력 개수 체크
+    tech_count = sum(1 for field in answers if field.startswith("사용 기술/마법/요력_"))
+    if tech_count > 6:
+        errors.append((["사용 기술/마법/요력"], f"기술/마법/요력은 최대 6개까지 가능합니다. 현재 {tech_count}개."))
+    
     return errors
 
 # 캐릭터 심사 결과 저장
@@ -336,8 +398,16 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
 async def send_message_with_retry(channel, content, max_retries=3):
     for attempt in range(max_retries):
         try:
-            await channel.send(content)
-            await asyncio.sleep(RATE_LIMIT_DELAY)  # API 호출 간 지연
+            if isinstance(channel, discord.ForumChannel):
+                thread = await channel.create_thread(
+                    name=f"캐릭터 등록: {content[:50]}",
+                    content=content,
+                    auto_archive_duration=10080
+                )
+                return thread
+            else:
+                await channel.send(content)
+            await asyncio.sleep(RATE_LIMIT_DELAY)
             return
         except discord.HTTPException as e:
             if e.status == 429:
@@ -411,10 +481,9 @@ async def process_flex_queue():
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
                         else:
-                            # 실패 시 문제 있는 필드 식별
                             failed_fields = []
                             for field in answers:
-                                if field in reason:  # 간단히 reason에 필드 이름이 포함된 경우로 판단
+                                if field in reason:
                                     failed_fields.append(field)
                             result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
@@ -430,10 +499,12 @@ async def process_flex_queue():
 
 # 캐릭터 신청 명령어
 answers = {}
+tech_counter = 0
 @bot.tree.command(name="캐릭터_신청", description="캐릭터를 신청해! 순차적으로 질문에 답해줘~")
 async def character_apply(interaction: discord.Interaction):
-    global answers
+    global answers, tech_counter
     answers = {}
+    tech_counter = 0
     user = interaction.user
     channel = interaction.channel
 
@@ -443,29 +514,74 @@ async def character_apply(interaction: discord.Interaction):
         return
 
     await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
-    await asyncio.sleep(RATE_LIMIT_DELAY)  # 초기 응답 후 지연
+    await asyncio.sleep(RATE_LIMIT_DELAY)
 
     for question in questions:
-        while True:
-            await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
-            try:
-                response = await bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == user and m.channel == channel,
-                    timeout=300.0
-                )
-                answer = response.content.strip()
-                if question["validator"](answer):
-                    answers[question["field"]] = answer
-                    break
-                else:
-                    await send_message_with_retry(channel, question["error_message"])
-            except asyncio.TimeoutError:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-                return
-            except discord.HTTPException as e:
-                await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
-                return
+        if question.get("condition") and not question["condition"](answers):
+            continue
+        if question.get("field") == "사용 기술/마법/요력 추가 여부":
+            if tech_counter >= 6:
+                continue
+            while True:
+                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                try:
+                    response = await bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == user and m.channel == channel,
+                        timeout=300.0
+                    )
+                    answer = response.content.strip()
+                    if question["validator"](answer):
+                        if answer == "예":
+                            for tech_question in questions:
+                                if tech_question.get("is_tech"):
+                                    while True:
+                                        field = f"{tech_question['field']}_{tech_counter}"
+                                        await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                        response = await bot.wait_for(
+                                            "message",
+                                            check=lambda m: m.author == user and m.channel == channel,
+                                            timeout=300.0
+                                        )
+                                        tech_answer = response.content.strip()
+                                        if tech_question["validator"](tech_answer):
+                                            answers[field] = tech_answer
+                                            break
+                                        else:
+                                            await send_message_with_retry(channel, tech_question["error_message"])
+                            tech_counter += 1
+                            if tech_counter < 6:
+                                continue
+                        break
+                    else:
+                        await send_message_with_retry(channel, question["error_message"])
+                except asyncio.TimeoutError:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                    return
+                except discord.HTTPException as e:
+                    await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                    return
+        else:
+            while True:
+                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                try:
+                    response = await bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == user and m.channel == channel,
+                        timeout=300.0
+                    )
+                    answer = response.content.strip()
+                    if question["validator"](answer):
+                        answers[question["field"]] = answer
+                        break
+                    else:
+                        await send_message_with_retry(channel, question["error_message"])
+                except asyncio.TimeoutError:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                    return
+                except discord.HTTPException as e:
+                    await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                    return
 
     while True:
         errors = validate_all(answers)
