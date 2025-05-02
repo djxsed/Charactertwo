@@ -130,7 +130,7 @@ questions = [
         "error_message": "성격 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."
     },
     {
-        "field": "외모 글묘사",
+        "field": "외모",
         "prompt": "외모를 설명해주세요. (최소 20자)",
         "validator": lambda x: len(x) >= 20,
         "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."
@@ -142,14 +142,14 @@ questions = [
         "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."
     },
     {
-        "field": "학생_학년_반",
+        "field": "학년 및 반",
         "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)",
         "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x),
         "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.",
         "condition": lambda answers: answers.get("소속") == "학생"
     },
     {
-        "field": "선생님_담당_과목_학년_반",
+        "field": "담당 과목 및 학년, 반",
         "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)",
         "validator": lambda x: len(x) > 0,
         "error_message": "담당 과목과 학년, 반을 입력해주세요.",
@@ -475,9 +475,47 @@ async def process_flex_queue():
                                         await member.add_roles(race_role)
                                         result += f" (종족 `{race_role_name}` 부여했어! 😊)"
 
+                                # 새로운 출력 양식으로 description 재구성
+                                formatted_description = (
+                                    f"이름: {answers.get('이름', '미기재')}\n"
+                                    f"성별: {answers.get('성별', '미기재')}\n"
+                                    f"종족: {answers.get('종족', '미기재')}\n"
+                                    f"나이: {answers.get('나이', '미기재')}\n"
+                                    f"소속: {answers.get('소속', '미기재')}\n"
+                                )
+                                if answers.get("소속") == "학생":
+                                    formatted_description += f"학년 및 반: {answers.get('학년 및 반', '미기재')}\n"
+                                elif answers.get("소속") == "선생님":
+                                    formatted_description += f"담당 과목 및 학년, 반: {answers.get('담당 과목 및 학년, 반', '미기재')}\n"
+                                formatted_description += "동아리: 미기재\n\n"
+                                formatted_description += (
+                                    f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
+                                    f"성격: {answers.get('성격', '미기재')}\n"
+                                    f"외모: {answers.get('외모', '미기재')}\n\n"
+                                    f"체력: {answers.get('체력', '미기재')}\n"
+                                    f"지능: {answers.get('지능', '미기재')}\n"
+                                    f"이동속도: {answers.get('이동속도', '미기재')}\n"
+                                    f"힘: {answers.get('힘', '미기재')}\n"
+                                    f"냉철: {answers.get('냉철', '미기재')}\n"
+                                )
+                                # 기술/마법/요력 나열
+                                techs = []
+                                for i in range(6):
+                                    tech_name = answers.get(f"사용 기술/마법/요력_{i}")
+                                    if tech_name:
+                                        tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
+                                        tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
+                                        techs.append(f"{tech_name} (위력: {tech_power}, 설명: {tech_desc})")
+                                formatted_description += f"사용 기술/마법/요력: {', '.join(techs) if techs else '없음'}\n\n"
+                                formatted_description += (
+                                    f"과거사: {answers.get('과거사', '미기재')}\n"
+                                    f"특징: {answers.get('특징', '미기재')}\n\n"
+                                    f"관계: {answers.get('관계', '미기재')}"
+                                )
+
                                 char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
                                 if char_channel:
-                                    await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{description}")
+                                    await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}")
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
                         else:
@@ -614,6 +652,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     return
 
+    # 심사용 description은 기존 방식 유지
     description = "\n".join([f"{field}: {answers[field]}" for field in answers])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
