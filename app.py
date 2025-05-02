@@ -12,11 +12,6 @@ import asyncio
 from collections import deque
 from flask import Flask
 import threading
-import logging
-
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -25,7 +20,7 @@ app = Flask(__name__)
 def home():
     return "Discord Bot is running!"
 
-# 환경 변수 불러오기
+# 환경 변수 불러오기 (비밀 정보 보호)
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -40,30 +35,24 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix="/", intents=intents)
 
-# 상수 정의
+# 상수 정의 (설정값들)
 BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
 MIN_LENGTH = 50
-REQUIRED_FIELDS = ["이름", "나이", "성격"]
+REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
 
-# 기본 설정값
+# 기본 설정값 (DB에 저장되지 않은 경우 사용)
 DEFAULT_ALLOWED_RACES = ["인간", "마법사", "AML", "요괴"]
 DEFAULT_ALLOWED_ROLES = ["학생", "선생님", "AML"]
 DEFAULT_CHECK_CHANNEL_NAME = "입학-신청서"
 
-# 정규 표현식 (수정됨: 기술 파싱 안정화)
-NUMBER_PATTERN = (
-    r"\b(체력|지능|이동속도|힘)\s*[:：]\s*([1-6])\b|"  # 속성
-    r"\b냉철\s*[:：]\s*([1-4])\b|"  # 냉철
-    r"(?:[<\[({【《〈「]([^\]\)>}】》〉」\n]+)[\]\)>}】》〉」])\s*(?:(\d)?)?(?:\s*([^\n]*))?"  # 기술: (불꽃)2 손에서 불 발사
-)
-AGE_PATTERN = r"\b나이\s*[:：]\s*(\d+)|(?:\b나이\s*[:：](\d+))"
-FIELD_PATTERN = r"\b({})\s*[:：]\s*([^\n]+)|(?:\b({})\s*[:：]([^\n]+))"
-SKILL_LIST_PATTERN = r"\b사용 기술\/마법\/요력\s*[:：]\s*([\s\S]*?)(?=\n\s*\w+\s*[:：]|\Z)"
+# 숫자 속성 체크용 정규 표현식
+NUMBER_PATTERN = r"\b(체력|지능|이동속도|힘)\s*:\s*([1-6])\b|\b냉철\s*:\s*([1-4])\b|\[\w+\]\s*\((\d)\)"
+AGE_PATTERN = r"나이:\s*(\d+)"
 
-# 기본 프롬프트
+# 기본 프롬프트 (서버별 프롬프트가 없을 경우 사용)
 DEFAULT_PROMPT = """
 디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
 1. 서버 규칙에 맞는지 판단해.
@@ -74,93 +63,95 @@ DEFAULT_PROMPT = """
 - 금지 단어: {banned_words} (이미 확인됨).
 - 필수 항목: {required_fields} (이미 확인됨).
 - 허용 종족: {allowed_races}.
-- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~6) (이미 확인됨).
-- 필드 형식: '필드명: 값', '필드명 : 값', '필드명:값' 등 띄어쓰기 및 콜론(: 또는 :) 허용.
-- 기술 표기: <기술명>, [기술명], (기술명), {기술명}, 【기술명】, 《기술명》, 〈기술명〉, 「기술명」.
-- 위력 표기: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1' 등.
-- 기술 설명: 같은 줄, 다음 줄, 들여쓰기 유무 상관없이 기술명/위력 뒤 텍스트.
-- 필드(이름, 나이, 성격, 과거사 등)와 기술은 구분. 필드는 기술로 오인 금지.
-- 설명은 현실적, 역할극 적합.
+- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
+- 설명은 현실적이고 역할극에 적합해야 해.
 - 시간/현실 조작 능력 금지.
-- 과거사: 시간 여행, 초자연적, 비현실적 사건 금지.
+- 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
 - 나이: 1~5000살 (이미 확인됨).
-- 소속: A.M.L, 하람고, 하람고등학교만 허용.
-- 속성 합산: 인간 5~16, 마법사 5~17, 요괴 5~18.
-- 학년 및 반: 'x-y반', 'x학년 y반', 'x/y반' 형식.
-- 기술/마법 위력: 1~5.
-- 기술/마법/요력: 시간, 범위, 위력 명확, 과도 금지.
-- 기술/마법/요력: 최대 6개.
-- AML 소속 시 요괴 불가(정체 숨김 맥락 제외).
-- 위력 4~5는 쿨타임/리스크 필수.
-- 치유/방어 계열 역계산.
-- 정신 계열 능력 불가.
-- 스탯표 준수.
-- 기술/마법/요력 옆 숫자는 위력.
+- 소속: A.M.L, 하람고, 하람고등학교만 허용 (동아리 제외).
+- 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~16, 마법사 5~17, 요괴 5~18.
+- 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
+- 기술/마법 위력은 1~5만 허용.(음수, 0, 6 이상은 탈락)
+- 기술/마법/요력은 시간, 범위, 위력 등이 명확해야 하고 너무 크면 안 돼. (예: 18초, 50m, 5).
+- 기술/마법/요력의 개수는 6개 이상이면 안 돼.
+- 만약 소속이 AML이라면 요괴는 안 돼.(단, 과거사 혹은 특징에 정체를 숨기고 AML에 들어간 맥락이 포함돼면 가능)
+- 기술/마법/요력의 위력이 4 혹은 5라면 쿨타임과 리스크가 있어야 해.
+- 기술/마법/요력의 치유 계열이나 방어 계열이 있다면 이의 역으로 계산해.
+- 정신 계열 능력은 불가해.
+- 스탯표의 위력 별 내용과 다르다면 안 돼.
+- 설정에 위반되면 안 돼.
+- 기술/마법/요력 옆의 숫자가 위력을 의미.
 
-**역할 판단**:
-1. 소속 'AML' 또는 'A.M.L' → AML.
-2. 소속 '선생' 또는 '선생님' → 선생님.
-3. 소속 '학생' 또는 괄호 학생 → 학생.
-4. 미충족 → 실패.
+**역할 판단 (이 순서대로 엄격히 확인)**:
+1. 소속에 'AML' 또는 'A.M.L'이 포함되면 AML로 판단.
+2. 소속에 '선생' 또는 '선생님'이 적혀있다면 선생님으로 판단.
+3. 소속에 '학생' 또는 괄호 사이의 학생 등이 적혀있다면 학생으로 판단.
+4. 위 조건에 해당되지 않으면 실패.
 
 **주의**:
-- AML/선생님 조건 시 학생 판단 금지.
-- 역할은 {allowed_roles} 중 하나.
-- 역할 모호 시 실패.
+- AML이나 선생님 조건이 충족되면 학생으로 판단하지 마.
+- 역할은 반드시 {allowed_roles} 중 하나만 선택.
+- 역할 판단이 모호하면 실패 처리.
 
 **설정**:
-- 마법 실제 존재.
-- 몇 년 전 사건으로 마법/이종족 공개.
-- 2050년 미래.
-- 마법사/요괴 공존 의사.
-- 하람고등학교: 학생/요괴/마법사 공존.
-- AML: 하람고 적대, 갈등 조장.
+- 마법이 실제하다.
+- 몇년 전 한 사건이 터지며 마법과 이종족들이 인간들에게 알려지게 된다.
+- 2050년 세계관이다.(미래)
+- 마법사와 요괴들은 공존하고 싶다는 의사 표명.
+- 누군가 의견 주장을 통해 하람고등학교가 세워짐.
+- 하람고등학교는 학생, 요괴, 마법사들이 공존하는 세계.
+- AML은 요괴와 마법사를 증오해 하람고등학교를 적대시함.
+- AML의 목적은 하람고등학교를 없애고 갈등을 부추기는 것.
 
 **스탯표**:
 지능
-1 = IQ 60~80
-2 = IQ 90
-3 = IQ 100
-4 = IQ 120
-5 = IQ 150
-6 = IQ 180
+1 IQ 60~80 수준.
+2 IQ 90 수준.
+3 IQ 100 수준.
+4 IQ 120 수준.
+5 IQ 150 수준.
+6 IQ 180 수준.
 
 힘
-1 = 1~29kg
-2 = 30kg
-3 = 50kg
-4 = 125kg
-5 = 300kg
-6 = 600kg
+1 1~29kg을 들 수 있음.
+2 30kg을 들 수 있음.
+3 50kg을 들 수 있음.
+4 125kg을 들 수 있음.
+5 300kg을 들 수 있음.
+6 600kg을 들 수 있음.
 
-이동속도
-1 = 움직임 버거움
-2 = 평균보다 느림
-3 = 100m 25~20초
-4 = 100m 19~13초
-5 = 100m 12~6초
-6 = 100m 5~3초
+이동속도(최대 속도 기준)
+1 움직이는것조차 버거워함.
+2 움직임에 지장은 없으나 평균 속도보다 느림.
+3 100m 25초~20초.
+4 100m 19초~13초.
+5 100m 12초~6초.
+6 100m 5초~3초
 
 냉철
-1 = 원초적 감정
-2 = 평범한 청소년
-3 = 격한 감정 무시
-4 = 감정 동요 없음
+1 끈기가 거의 없으며 원초적인 감정이 태반.
+2 평범한 인간 청소년의 정신세계. 그러나 격한 감정에는 쉽게 휘둘린다.
+3 생사의 위기를 제외한 격한 감정을 느껴도 그다지 반응하지 않는다.
+4 감정의 동요가 모든 상황에서 거의 없다.
 
 체력
-1 = 간신히 생존
-2 = 운동 부족
-3 = 평범한 청소년
-4 = 운동선수
-5 = 초인적 맷집
-6 = 인간 한계 초월
+1 간신히 살아있는 수준.
+2 운동 부족한 사람 수준.
+3 평범한 청소년 수준.
+4 훈련된 운동선수 수준.
+5 초인적 맷집.
+6 인간 한계 초월.
+7은 일반 캐릭터로는 절대로 도달 불가.
 
-능력/마법/기술 위력
-1 = 피해 없음
-2 = 경미한 상처
-3 = 깊은 상처
-4 = 불구/사망
-5 = 콘크리트 파괴
+능력, 마법, 요법, 기술 위력
+1 피격되어도 신체에는 문제가 없거나 피해가 없음.
+2 피격될 시 경미한 상처가 생김.
+3 피격될 시 깊은 상처가 생김.
+4 피격될 시 불구의 상처를 남길수도 있음(죽음 포함).
+5 콘크리트 구조물을 파괴할 수 있음.
+
+회복기 및 방어 능력은 이에 역(예: 깊은 상처를 치유 가능하다면 4)이며, 유틸기는 1 고정.
+6 이상은 절대로 도달 불가.
 
 **캐릭터 설명**:
 {description}
@@ -282,13 +273,6 @@ async def save_result(character_id, description, pass_status, reason, role_name)
         """, (character_id, description_hash, pass_status, reason, role_name, timestamp))
         await db.commit()
 
-# 캐릭터 심사 결과 삭제
-async def clear_result(description):
-    description_hash = hashlib.md5(description.encode()).hexdigest()
-    async with aiosqlite.connect("characters.db") as db:
-        await db.execute("DELETE FROM results WHERE description_hash = ?", (description_hash,))
-        await db.commit()
-
 # Flex 작업 큐에 추가
 async def queue_flex_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
     task_id = str(uuid.uuid4())
@@ -331,121 +315,51 @@ async def check_cooldown(user_id):
                 request_count = 0
 
             if request_count >= MAX_REQUESTS_PER_DAY:
-                return False, f"❌ 하루 요청 한도 초과! 최대 {MAX_REQUESTS_PER_DAY}번! 내일 와! 😊"
+                return False, f"❌ 하루에 너무 많이 요청했어! 최대 {MAX_REQUESTS_PER_DAY}번이야~ 내일 다시 와! 😊"
 
             if (now - last_request).total_seconds() < COOLDOWN_SECONDS:
-                return False, f"❌ {COOLDOWN_SECONDS}초 더 기다려! 잠시 쉬어~ 😅"
+                return False, f"❌ 아직 {COOLDOWN_SECONDS}초 더 기다려야 해! 잠시 쉬어~ 😅"
 
             await db.execute("UPDATE cooldowns SET last_request = ?, request_count = ? WHERE user_id = ?",
                              (now.isoformat(), request_count + 1, user_id))
             await db.commit()
             return True, ""
 
-# 캐릭터 설명 검증 (수정됨: 기술 파싱 개선, 예외 처리 강화)
+# 캐릭터 설명 검증
 async def validate_character(description):
-    logger.info(f"Validating character description: {description[:100]}...")
     if len(description) < MIN_LENGTH:
-        return False, f"❌ 설명 너무 짧아! 최소 {MIN_LENGTH}자 써줘~ 📝"
+        return False, f"❌ 설명이 너무 짧아! 최소 {MIN_LENGTH}자는 써줘~ 📝"
 
-    # 필수 필드 체크
-    found_fields = []
-    field_values = {}
-    for field in REQUIRED_FIELDS:
-        pattern = r"\b" + field + r"\s*[:：]\s*([^\n]+)|(?:\b" + field + r"\s*[:：]([^\n]+))"
-        match = re.search(pattern, description)
-        if match:
-            value = match.group(1) or match.group(2)
-            found_fields.append(field)
-            field_values[field] = value.strip()
-    
-    missing_fields = [field for field in REQUIRED_FIELDS if field not in found_fields]
+    missing_fields = [field for field in REQUIRED_FIELDS if field not in description]
     if missing_fields:
-        return False, f"❌ {', '.join(missing_fields)} 빠졌어! '{field}: 값' 또는 '{field}:값' 써줘~ 🧐"
+        return False, f"❌ {', '.join(missing_fields)}가 빠졌어! 꼭 넣어줘~ 🧐"
 
     found_banned_words = [word for word in BANNED_WORDS if word in description]
     if found_banned_words:
-        return False, f"❌ 금지 단어 {', '.join(found_banned_words)} 포함! 규칙 지켜~ 😅"
+        return False, f"❌ 금지된 단어 {', '.join(found_banned_words)}가 있어! 규칙 지켜줘~ 😅"
 
-    # 나이 검증
-    if "나이" in field_values:
-        try:
-            age = int(field_values["나이"])
-            if not (1 <= age <= 5000):
-                return False, f"❌ 나이 {age}살? 1~5000살로~ 🕰️"
-        except ValueError:
-            return False, f"❌ 나이는 숫자! 예: '나이: 30' 또는 '나이:30' 😄"
+    age_match = re.search(AGE_PATTERN, description)
+    if age_match:
+        age = int(age_match.group(1))
+        if not (1 <= age <= 5000):
+            return False, f"❌ 나이가 {age}살이야? 1~5000살 사이로 해줘~ 🕰️"
     else:
-        return False, f"❌ 나이 써줘! '나이: 숫자' 또는 '나이:숫자'~ 😄"
+        return False, "❌ 나이를 '나이: 숫자'로 써줘! 궁금해~ 😄"
 
-    # 기술 및 속성 검증
-    matches = re.finditer(NUMBER_PATTERN, description, re.MULTILINE)  # finditer로 매칭 위치 추적
-    skill_count = 0
-    skills = []
-    attributes = {}
-    
+    matches = re.findall(NUMBER_PATTERN, description)
     for match in matches:
-        logger.info(f"NUMBER_PATTERN match: {match.group()} at position {match.start()}-{match.end()}")
-        if match.group(1):  # 속성 (체력, 지능, 이동속도, 힘)
-            value = int(match.group(2))
+        if match[1]:
+            value = int(match[1])
             if not (1 <= value <= 6):
-                return False, f"❌ '{match.group(1)}' {value}? 1~6으로~ 💪"
-            attributes[match.group(1)] = value
-        elif match.group(3):  # 냉철
-            value = int(match.group(3))
+                return False, f"❌ '{match[0]}'이 {value}야? 1~6으로 해줘~ 💪"
+        elif match[2]:
+            value = int(match[2])
             if not (1 <= value <= 4):
-                return False, f"❌ 냉철 {value}? 1~4로~ 🧠"
-            attributes["냉철"] = value
-        elif match.group(4):  # 기술
-            skill_name = match.group(4).strip()
-            # 기술명이 필드명과 겹치거나 비어 있는 경우 스킵
-            if not skill_name or any(field.lower() in skill_name.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
-                logger.info(f"Skipping skill '{skill_name}' due to invalid name or overlap with field")
-                continue
-            power = match.group(5)
-            skill_desc = match.group(6).strip() if match.group(6) else "기본 기술"
-            # 기술 설명이 기술명으로 잘못 파싱되지 않도록 추가 검증
-            if skill_desc and any(field.lower() in skill_desc.lower() for field in REQUIRED_FIELDS + ["소속", "종족", "키/몸무게", "과거사", "사용 기술/마법/요력"]):
-                logger.info(f"Adjusting skill description for '{skill_name}': {skill_desc} might be a field, setting to default")
-                skill_desc = "기본 기술"
-            try:
-                value = int(power) if power else 1
-                if not (1 <= value <= 5):
-                    return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
-            except (ValueError, TypeError) as e:
-                logger.error(f"Skill power parsing error for '{skill_name}': {str(e)}")
-                return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '({skill_name}) 1' 😅"
-            skill_count += 1
-            skills.append({"name": skill_name, "power": value, "description": skill_desc})
-
-    # 기술 목록 필드 처리
-    skill_list_match = re.search(SKILL_LIST_PATTERN, description)
-    if skill_list_match:
-        skill_list = skill_list_match.group(1).strip().split("\n")
-        for skill_line in skill_list:
-            skill_line = skill_line.strip()
-            if not skill_line:
-                continue
-            skill_match = re.match(r"(?:[-*] )?([^\(]+)(?:\s*\(위력\s*[:：]?\s*(\d)\))?(?:\s*([^\n]*))?", skill_line)
-            if skill_match:
-                skill_name = skill_match.group(1).strip()
-                power = skill_match.group(2)
-                skill_desc = skill_match.group(3).strip() if skill_match.group(3) else "기본 기술"
-                try:
-                    value = int(power) if power else 1
-                    if not (1 <= value <= 5):
-                        return False, f"❌ '{skill_name}' 위력 {value}? 1~5로~ 🔥"
-                except (ValueError, TypeError) as e:
-                    logger.error(f"Skill list power parsing error for '{skill_name}': {str(e)}")
-                    return False, f"❌ '{skill_name}' 위력 숫자 아님! 예: '{skill_name} (위력: 1)' 😅"
-                skill_count += 1
-                skills.append({"name": skill_name, "power": value, "description": skill_desc})
-
-    if skill_count > 6:
-        return False, f"❌ 기술 {skill_count}개? 최대 6개야~ ⚔️"
-
-    logger.info(f"Parsed fields: {field_values}")
-    logger.info(f"Parsed attributes: {attributes}")
-    logger.info(f"Parsed skills: {skills}")
+                return False, f"❌ 냉철이 {value}? 1~4로 해줘~ 🧠"
+        elif match[3]:
+            value = int(match[3])
+            if not (1 <= value <= 5):
+                return False, f"❌ 기술/마법 위력이 {value}? 1~5로 해줘~ 🔥"
 
     return True, ""
 
@@ -483,20 +397,22 @@ async def process_flex_queue():
                             guild = thread.guild if hasattr(thread, 'guild') else thread
                             member = guild.get_member(int(user_id))
                             
+                            # 원본 메시지 가져오기
                             messages = [message async for message in thread.history(limit=1, oldest_first=True)]
                             original_message = messages[0] if messages else None
 
                             if pass_status and task_type == "character_check":
+                                # 원본 메시지에 ✅ 반응 추가
                                 if original_message:
                                     try:
                                         await original_message.add_reaction("☑️")
                                     except discord.Forbidden:
-                                        await thread.send("❌ 반응 추가 권한 없어! 🥺")
+                                        await thread.send("❌ 메시지에 반응 추가 권한이 없어! 🥺")
 
                                 allowed_roles, _ = await get_settings(guild.id)
 
                                 if role_name and role_name not in allowed_roles:
-                                    result = f"❌ 역할 `{role_name}` 허용 안 돼! 허용: {', '.join(allowed_roles)} 🤔"
+                                    result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
                                 else:
                                     has_role = False
                                     role = None
@@ -520,25 +436,25 @@ async def process_flex_queue():
                                             has_role = True
 
                                     if has_role:
-                                        result = "🎉 통과! 역할 이미 있어! 역극 즐겨~ 🎊"
+                                        result = "🎉 축하해! 통과했어!~ 역할은 이미 있으니까 이 캐릭터로 역극 마음껏 즐길 수 있어~! 🎊"
                                     else:
                                         if role:
                                             try:
                                                 await member.add_roles(role)
-                                                result += f" (`{role_name}` 부여! 😊)"
+                                                result += f" (역할 `{role_name}` 부여했어! 😊)"
                                             except discord.Forbidden:
-                                                result += f" (`{role_name}` 부여 실패... 권한 없어! 🥺)"
+                                                result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
                                         else:
-                                            result += f" (`{role_name}` 서버에 없어... 관리자 문의! 🤔)"
+                                            result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
 
                                         if race_role:
                                             try:
                                                 await member.add_roles(race_role)
-                                                result += f" (종족 `{race_role_name}` 부여! 😊)"
+                                                result += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
                                             except discord.Forbidden:
-                                                result += f" (종족 `{race_role_name}` 부여 실패... 권한 없어! 🥺)"
+                                                result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
                                         elif race_role_name:
-                                            result += f" (종족 `{race_role_name}` 서버에 없어... 관리자 문의! 🤔)"
+                                            result += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
 
                             await thread.send(f"{member.mention} {result}")
 
@@ -550,75 +466,72 @@ async def process_flex_queue():
                             await log_channel.send(f"작업 완료\n유저: {member}\n타입: {task_type}\n결과: {result}")
 
                     except Exception as e:
-                        logger.error(f"Flex queue processing error: {str(e)}")
                         await save_result(character_id, description, False, f"OpenAI 오류: {str(e)}", None) if task_type == "character_check" else None
                         if thread:
-                            await thread.send(f"❌ 처리 중 오류: {str(e)} 다시 시도해! 🥹")
+                            await thread.send(f"❌ 앗, 처리 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("failed", task_id))
                         await db.commit()
         await asyncio.sleep(1)
 
 # 캐릭터 심사 로직
-async def check_character(description, member, guild, thread, force_recheck=False):
-    logger.info(f"Checking character for {member.name}: {description[:100]}...")
+async def check_character(description, member, guild, thread):
+    print(f"캐릭터 검사 시작: {member.name}")
     try:
-        if not force_recheck:
-            cached_result = await get_result(description)
-            if cached_result:
-                pass_status, reason, role_name = cached_result
-                if pass_status:
-                    allowed_roles, _ = await get_settings(guild.id)
-                    if role_name and role_name not in allowed_roles:
-                        result = f"❌ 역할 `{role_name}` 허용 안 돼! 허용: {', '.join(allowed_roles)} 🤔"
-                    else:
-                        has_role = False
-                        role = None
-                        if role_name:
-                            role = discord.utils.get(guild.roles, name=role_name)
-                            if role and role in member.roles:
-                                has_role = True
+        cached_result = await get_result(description)
+        if cached_result:
+            pass_status, reason, role_name = cached_result
+            if pass_status:
+                allowed_roles, _ = await get_settings(guild.id)
 
-                        race_role_name = None
-                        race_role = None
-                        if "인간" in description:
-                            race_role_name = "인간"
-                        elif "마법사" in description:
-                            race_role_name = "마법사"
-                        elif "요괴" in description:
-                            race_role_name = "요괴"
-
-                        if race_role_name:
-                            race_role = discord.utils.get(guild.roles, name=race_role_name)
-                            if race_role and race_role in member.roles:
-                                has_role = True
-
-                        if has_role:
-                            result = "🎉 이미 통과! 역할 있어! 역극 즐겨~ 🎊"
-                        else:
-                            result = f"🎉 이미 통과! 역할: {role_name} 🎊"
-                            if role:
-                                try:
-                                    await member.add_roles(role)
-                                    result += f" (`{role_name}` 부여! 😊)"
-                                except discord.Forbidden:
-                                    result += f" (`{role_name}` 부여 실패... 권한 없어! 🥺)"
-                            else:
-                                result += f" (`{role_name}` 서버에 없어... 관리자 문의! 🤔)"
-
-                            if race_role:
-                                try:
-                                    await member.add_roles(race_role)
-                                    result += f" (종족 `{race_role_name}` 부여! 😊)"
-                                except discord.Forbidden:
-                                    result += f" (종족 `{race_role_name}` 부여 실패... 권한 없어! 🥺)"
-                            elif race_role_name:
-                                result += f" (종족 `{race_role_name}` 서버에 없어... 관리자 문의! 🤔)"
+                if role_name and role_name not in allowed_roles:
+                    result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
                 else:
-                    result = f"❌ 이전 실패: {reason} 수정 후 /재검사! 💪"
-                return result
+                    has_role = False
+                    role = None
+                    if role_name:
+                        role = discord.utils.get(guild.roles, name=role_name)
+                        if role and role in member.roles:
+                            has_role = True
 
-        if force_recheck:
-            await clear_result(description)
+                    race_role_name = None
+                    race_role = None
+                    if "인간" in description:
+                        race_role_name = "인간"
+                    elif "마법사" in description:
+                        race_role_name = "마법사"
+                    elif "요괴" in description:
+                        race_role_name = "요괴"
+
+                    if race_role_name:
+                        race_role = discord.utils.get(guild.roles, name=race_role_name)
+                        if race_role and race_role in member.roles:
+                            has_role = True
+
+                    if has_role:
+                        result = "🎉 이미 통과된 캐릭터야~ 역할은 이미 있어! 🎊"
+                    else:
+                        result = f"🎉 이미 통과된 캐릭터야~ 역할: {role_name} 🎊"
+                        if role:
+                            try:
+                                await member.add_roles(role)
+                                result += f" (역할 `{role_name}` 부여했어! 😊)"
+                            except discord.Forbidden:
+                                result += f" (역할 `{role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                        else:
+                            result += f" (역할 `{role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+                        if race_role:
+                            try:
+                                await member.add_roles(race_role)
+                                result += f" (종족 역할 `{race_role_name}` 부여했어! 😊)"
+                            except discord.Forbidden:
+                                result += f" (종족 역할 `{race_role_name}` 부여 실패... 권한이 없나 봐! 🥺)"
+                        elif race_role_name:
+                            result += f" (종족 역할 `{race_role_name}`이 서버에 없어... 관리자한테 물어봐! 🤔)"
+
+            else:
+                result = f"❌ 이전에 실패했어... 이유: {reason} 다시 수정해봐! 💪"
+            return result
 
         is_valid, error_message = await validate_character(description)
         if not is_valid:
@@ -631,16 +544,14 @@ async def check_character(description, member, guild, thread, force_recheck=Fals
 
         try:
             await queue_flex_task(str(thread.id), description, str(member.id), str(thread.parent.id), str(thread.id), "character_check", prompt)
-            return "⏳ 심사 중! 곧 결과 알려줄게~ 😊"
+            return "⏳ 캐릭터 심사 중이야! 곧 결과 알려줄게~ 😊"
         except Exception as e:
-            logger.error(f"Queue error: {str(e)}")
             await save_result(str(thread.id), description, False, f"큐 오류: {str(e)}", None)
-            return f"❌ 심사 요청 오류: {str(e)} 다시 시도해! 🥹"
+            return f"❌ 앗, 심사 요청 중 오류가 났어... {str(e)} 다시 시도해봐! 🥹"
 
     except Exception as e:
-        logger.error(f"Validation error: {str(e)}")
-        await save_result(str(thread.id), description, False, f"검증 오류: {str(e)}", None)
-        return f"❌ 검증 오류: {str(e)} 나중에 시도해! 🥹"
+        await save_result(str(thread.id), description, False, f"오류: {str(e)}", None)
+        return f"❌ 앗, 오류가 났어... {str(e)} 나중에 다시 시도해! 🥹"
 
 # 최근 캐릭터 설명 찾기
 async def find_recent_character_description(channel, user):
@@ -656,11 +567,7 @@ async def find_recent_character_description(channel, user):
     try:
         async for message in channel.history(limit=100):
             if message.author == user and not message.content.startswith("/") and len(message.content) >= MIN_LENGTH:
-                found_fields = []
-                for field in REQUIRED_FIELDS:
-                    if re.search(r"\b" + field + r"\s*[:：]\s*[^\n]+|\b" + field + r"\s*[:：][^\n]+", message.content):
-                        found_fields.append(field)
-                if len(found_fields) == len(REQUIRED_FIELDS):
+                if all(field in message.content for field in REQUIRED_FIELDS):
                     return message.content
     except discord.Forbidden:
         return None
@@ -669,25 +576,25 @@ async def find_recent_character_description(channel, user):
 @bot.event
 async def on_ready():
     await init_db()
-    logger.info(f'Bot logged in: {bot.user}')
+    print(f'봇이 로그인했어: {bot.user}')
     await bot.tree.sync()
     bot.loop.create_task(process_flex_queue())
 
 @bot.event
 async def on_thread_create(thread):
-    logger.info(f"New thread: {thread.name} (parent: {thread.parent.name})")
+    print(f"새 스레드: {thread.name} (부모: {thread.parent.name})")
     _, check_channel_name = await get_settings(thread.guild.id)
     if thread.parent.name == check_channel_name and not thread.owner.bot:
         try:
             bot_member = thread.guild.me
             permissions = thread.permissions_for(bot_member)
             if not permissions.send_messages or not permissions.read_message_history:
-                await thread.send("❌ 권한 없어! 관리자 문의~ 🥺")
+                await thread.send("❌ 권한이 없어! 서버 관리자한테 물어봐~ 🥺")
                 return
 
             messages = [message async for message in thread.history(limit=1, oldest_first=True)]
             if not messages or messages[0].author.bot:
-                await thread.send("❌ 첫 메시지 못 찾음! 다시 올려~ 🤔")
+                await thread.send("❌ 첫 메시지를 못 찾았어! 다시 올려줘~ 🤔")
                 return
 
             message = messages[0]
@@ -700,14 +607,13 @@ async def on_thread_create(thread):
             await thread.send(f"{message.author.mention} {result}")
 
         except Exception as e:
-            logger.error(f"Thread creation error: {str(e)}")
-            await thread.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+            await thread.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
             log_channel = bot.get_channel(LOG_CHANNEL_ID)
             if log_channel:
                 await log_channel.send(f"오류: {str(e)}")
 
 # 피드백 명령어
-@bot.tree.command(name="피드백", description="심사 결과 질문! 예: /피드백 왜 안된거야?")
+@bot.tree.command(name="피드백", description="심사 결과에 대해 질문해! 예: /피드백 왜 안된거야?")
 async def feedback(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
     try:
@@ -718,30 +624,30 @@ async def feedback(interaction: discord.Interaction, question: str):
 
         description = await find_recent_character_description(interaction.channel, interaction.user)
         if not description:
-            await interaction.followup.send("❌ 최근 설명 못 찾음! 먼저 올려~ 😊")
+            await interaction.followup.send("❌ 최근 캐릭터 설명을 못 찾았어! 먼저 올려줘~ 😊")
             return
 
         cached_result = await get_result(description)
         if not cached_result:
-            await interaction.followup.send("❌ 심사 결과 없음! 먼저 심사해~ 🤔")
+            await interaction.followup.send("❌ 심사 결과를 못 찾았어! 먼저 심사해줘~ 🤔")
             return
 
         pass_status, reason, role_name = cached_result
         prompt = f"""
         캐릭터 설명: {description}
         심사 결과: {'통과' if pass_status else '실패'}, 이유: {reason}
-        질문: {question}
-        50자 내 간단 답변. 친근 재밌게. 통과/탈락 여부 먼저.
+        사용자 질문: {question}
+        50자 이내로 간단히 답변해. 말투는 친근하고 재밌게.
+        통과인지 탈락인지 여부부터 설명.
         """
         task_id = await queue_flex_task(None, description, str(interaction.user.id), str(interaction.channel.id), None, "feedback", prompt)
-        await interaction.followup.send("⏳ 피드백 처리 중! 곧 알려줄게~ 😊")
+        await interaction.followup.send("⏳ 피드백 처리 중이야! 곧 알려줄게~ 😊")
 
     except Exception as e:
-        logger.error(f"Feedback error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 재검사 명령어
-@bot.tree.command(name="재검사", description="최근 캐릭터 다시 심사!")
+@bot.tree.command(name="재검사", description="최근 캐릭터로 다시 심사해!")
 async def recheck(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
@@ -752,10 +658,10 @@ async def recheck(interaction: discord.Interaction):
 
         description = await find_recent_character_description(interaction.channel, interaction.user)
         if not description:
-            await interaction.followup.send("❌ 최근 설명 못 찾음! 먼저 올려~ 😊")
+            await interaction.followup.send("❌ 최근 캐릭터 설명을 못 찾았어! 먼저 올려줘~ 😊")
             return
 
-        result = await check_character(description, interaction.user, interaction.guild, interaction.channel, force_recheck=True)
+        result = await check_character(description, interaction.user, interaction.guild, interaction.channel)
         await interaction.followup.send(f"{interaction.user.mention} {result}")
 
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
@@ -763,22 +669,48 @@ async def recheck(interaction: discord.Interaction):
             await log_channel.send(f"재검사 요청\n유저: {interaction.user}\n결과: {result}")
 
     except Exception as e:
-        logger.error(f"Recheck error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 질문 명령어
-@bot.tree.command(name="질문", description="QnA 채널 질문! 예: /질문 서버 규칙 뭐야?")
+@bot.tree.command(name="질문", description="QnA 채널에서 질문해! 예: /질문 이 서버 규칙이 뭐야?")
 async def ask_question(interaction: discord.Interaction, question: str):
     await interaction.response.defer()
-    await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+    try:
+        can_proceed, error_message = await check_cooldown(str(interaction.user.id))
+        if not can_proceed:
+            await interaction.followup.send(error_message)
+            return
+
+        if "❓❗qna룸" not in interaction.channel.name.lower() and "qna" not in interaction.channel.name.lower():
+            await interaction.followup.send("❌ 이 명령어는 QnA 채널에서만 사용할 수 있어! 😅")
+            return
+
+        prompt = f"""
+        디스코드 역할극 서버의 도우미 봇이야. 사용자가 질문을 했어.
+        질문: {question}
+        서버 규칙과 관련된 질문이면 규칙을 간단히 설명하고, 그 외의 질문은 서버와 관련된 재밌는 답변을 줘.
+        50자 이내로 간단히 답변해. 말투는 친근하고 재밌게!
+        **규칙**:
+        - 금지 단어: {', '.join(BANNED_WORDS)}.
+        - 필수 항목: {', '.join(REQUIRED_FIELDS)}.
+        - 허용 종족: {', '.join(DEFAULT_ALLOWED_RACES)}.
+        - 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5).
+        - 나이: 1~5000살.
+        - 소속: A.M.L, 하람고, 하람고등학교만 허용.
+        """
+        task_id = await queue_flex_task(None, None, str(interaction.user.id), str(interaction.channel.id), None, "question", prompt)
+        await interaction.followup.send("⏳ 질문 처리 중이야! 곧 답변해줄게~ 😊")
+
+    except Exception as e:
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 프롬프트 수정 명령어
-@bot.tree.command(name="프롬프트_수정", description="관리실에서 프롬프트 수정! 예: /프롬프트_수정 [내용]")
+@bot.tree.command(name="프롬프트_수정", description="관리실 채널에서 프롬프트 수정해! 예: /프롬프트_수정 [새 프롬프트 내용]")
 async def modify_prompt(interaction: discord.Interaction, new_prompt: str):
     await interaction.response.defer()
     try:
         if "관리실" not in interaction.channel.name.lower():
-            await interaction.followup.send("❌ 관리실에서만 가능! 😅")
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
             return
 
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
@@ -787,27 +719,26 @@ async def modify_prompt(interaction: discord.Interaction, new_prompt: str):
             return
 
         if len(new_prompt) > 2000:
-            await interaction.followup.send("❌ 프롬프트 너무 길어! 2000자 내로~ 📝")
+            await interaction.followup.send("❌ 프롬프트가 너무 길어! 2000자 이내로 줄여줘~ 📝")
             return
 
         await save_prompt(interaction.guild.id, new_prompt)
-        await interaction.followup.send("✅ 프롬프트 수정 완료! 적용됨~ 😊")
+        await interaction.followup.send("✅ 프롬프트가 성공적으로 수정되었어! 이제 적용될 거야~ 😊")
 
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"프롬프트 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n프롬프트: {new_prompt[:100]}...")
+            await log_channel.send(f"프롬프트 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 프롬프트: {new_prompt[:100]}...")
 
     except Exception as e:
-        logger.error(f"Modify prompt error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 프롬프트 초기화 명령어
-@bot.tree.command(name="프롬프트_초기화", description="관리실에서 프롬프트 기본값 초기화!")
+@bot.tree.command(name="프롬프트_초기화", description="관리실 채널에서 프롬프트를 기본값으로 초기화해!")
 async def reset_prompt(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
         if "관리실" not in interaction.channel.name.lower():
-            await interaction.followup.send("❌ 관리실에서만 가능! 😅")
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
             return
 
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
@@ -824,23 +755,22 @@ async def reset_prompt(interaction: discord.Interaction):
             description="{description}"
         )
         await save_prompt(interaction.guild.id, default_prompt)
-        await interaction.followup.send("✅ 프롬프트 기본값 초기화! 😊")
+        await interaction.followup.send("✅ 프롬프트가 기본값으로 초기화되었어! 이제 기본 프롬프트로 돌아갔어~ 😊")
 
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
             await log_channel.send(f"프롬프트 초기화\n서버: {interaction.guild.name}\n유저: {interaction.user}")
 
     except Exception as e:
-        logger.error(f"Reset prompt error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 역할 수정 명령어
-@bot.tree.command(name="역할_수정", description="관리실에서 역할 수정! 예: /역할_수정 학생,전사,마법사")
+@bot.tree.command(name="역할_수정", description="관리실 채널에서 허용된 역할 수정해! 예: /역할_수정 학생,전사,마법사")
 async def modify_roles(interaction: discord.Interaction, roles: str):
     await interaction.response.defer()
     try:
         if "관리실" not in interaction.channel.name.lower():
-            await interaction.followup.send("❌ 관리실에서만 가능! 😅")
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
             return
 
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
@@ -850,27 +780,26 @@ async def modify_roles(interaction: discord.Interaction, roles: str):
 
         new_roles = [role.strip() for role in roles.split(",")]
         if not new_roles:
-            await interaction.followup.send("❌ 역할 비어있어! 1개 이상 입력~ 😅")
+            await interaction.followup.send("❌ 역할 목록이 비어있어! 최소 1개 이상 입력해줘~ 😅")
             return
 
         await save_settings(interaction.guild.id, allowed_roles=new_roles)
-        await interaction.followup.send(f"✅ 역할 수정: {', '.join(new_roles)} 😊")
+        await interaction.followup.send(f"✅ 허용된 역할이 수정되었어! 새로운 역할: {', '.join(new_roles)} 😊")
 
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n역할: {', '.join(new_roles)}")
+            await log_channel.send(f"역할 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 역할: {', '.join(new_roles)}")
 
     except Exception as e:
-        logger.error(f"Modify roles error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
 # 검사 채널 수정 명령어
-@bot.tree.command(name="검사채널_수정", description="관리실에서 검사 채널 수정! 예: /검사채널_수정 캐릭터-심사")
+@bot.tree.command(name="검사채널_수정", description="관리실 채널에서 검사 채널 이름 수정해! 예: /검사채널_수정 캐릭터-심사")
 async def modify_check_channel(interaction: discord.Interaction, channel_name: str):
     await interaction.response.defer()
     try:
         if "관리실" not in interaction.channel.name.lower():
-            await interaction.followup.send("❌ 관리실에서만 가능! 😅")
+            await interaction.followup.send("❌ 이 명령어는 '관리실' 채널에서만 사용할 수 있어! 😅")
             return
 
         can_proceed, error_message = await check_cooldown(str(interaction.user.id))
@@ -879,73 +808,20 @@ async def modify_check_channel(interaction: discord.Interaction, channel_name: s
             return
 
         if len(channel_name) > 50:
-            await interaction.followup.send("❌ 채널 이름 너무 길어! 50자 내로~ 📝")
+            await interaction.followup.send("❌ 채널 이름이 너무 길어! 50자 이내로 줄여줘~ 📝")
             return
 
         await save_settings(interaction.guild.id, check_channel_name=channel_name)
-        await interaction.followup.send(f"✅ 검사 채널 수정: `{channel_name}` 😊")
+        await interaction.followup.send(f"✅ 검사 채널 이름이 수정되었어! 새로운 채널 이름: `{channel_name}` 😊")
 
         log_channel = bot.get_channel(LOG_CHANNEL_ID)
         if log_channel:
-            await log_channel.send(f"검사 채널 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n채널: {channel_name}")
+            await log_channel.send(f"검사 채널 수정\n서버: {interaction.guild.name}\n유저: {interaction.user}\n새 채널 이름: {channel_name}")
 
     except Exception as e:
-        logger.error(f"Modify check channel error: {str(e)}")
-        await interaction.followup.send(f"❌ 오류: {str(e)} 다시 시도~ 🥹")
+        await interaction.followup.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 
-# 양식 안내 명령어
-@bot.tree.command(name="양식_안내", description="캐릭터 양식 예시 확인!")
-async def format_guide(interaction: discord.Interaction):
-    await interaction.response.defer()
-    guide = """
-    ✅ 캐릭터 양식 예시:
-    - 필드: '이름: 값', '이름 : 값', '이름:값' 가능
-    - 기술: <기술명> 1, [기술명] 1, (기술명) 1, {기술명} 1, 【기술명】 1, 《기술명》 1, 〈기술명〉 1, 「기술명」 1
-    - 위력: '기술명 1', '기술명 위력 1', '기술명 위력: 1', '기술명 위력 : 1'
-    - 기술 목록: '사용 기술/마법/요력: 기술명 (위력: 1) 설명'
-    - 기술 설명: 같은 줄 또는 다음 줄 (예: <기술명> 1 설명 또는 \n    설명)
-    - 이전 실패 시: '/재검사'로 새 심사 요청!
-    예시:
-"안녕!!"
-
-이름:AA
-성별: 여성
-종족:요괴
-나이: 430
-소속:학생
-학년, 반: 1학년, 1반  
-동아리: 
-
-키/몸무게: 172/56 
-성격:활발하다.
-외모:(사진이 있다면 미기재해도 됩니다)
-
-체력: 5
-지능: 2
-이동속도: 3
-힘: 2
-냉철: 2
-사용 기술/마법/요력: 
-형태를 이루는 늪 (1)
-다크의 몸은 늪으로 이루어져 있습니다. 늪지대가 있는이상 다크의 늪이 25%이상 남아 있어야 회복 됩니다 늪은 다크의 몸을 이루기 때문에 신채 능력과 관련있습니다. 늪이 줄어들수록 다크의 덩치와 대미지가 줄어듭니다
-25%미만일때는 꼬마도마뱀으로 변합니다 이때는 지성만 남아있고 능력은 사용이 블가합니다 
-회복할때마다 오감이 서서히 사라집니다.
-
-늪(3)
-물채를 늪으로 만들어 조종합니다
-
-경질화(3)
-늪을 압축시켜 단단하게 만듭니다
-
-
-과거사:지하에서 탄생한 생명체.
-특징:음식을 잘 먹는다
-
-관계: 
-    """
-    await interaction.followup.send(guide)
-
-# Flask와 디스코드 봇 실행
+# Flask와 디스코드 봇을 동시에 실행
 if __name__ == "__main__":
     threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
     bot.run(DISCORD_TOKEN)
