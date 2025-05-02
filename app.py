@@ -43,7 +43,7 @@ REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
-RATE_LIMIT_DELAY = 1.0  # 각 API 호출 간 지연 시간(초)
+RATE_LIMIT_DELAY = 3.0  # 각 API 호출 간 지연 시간(초)
 
 # 기본 설정값
 DEFAULT_ALLOWED_RACES = ["인간", "마법사", "요괴"]
