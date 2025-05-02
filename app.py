@@ -12,6 +12,8 @@ import asyncio
 from collections import deque
 from flask import Flask
 import threading
+import time
+import aiohttp
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -42,6 +44,7 @@ REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
+RATE_LIMIT_DELAY = 1.0  # 각 API 호출 간 지연 시간(초)
 
 # 기본 설정값
 DEFAULT_ALLOWED_RACES = ["인간", "마법사", "요괴"]
@@ -329,6 +332,22 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
+# 429 에러 재시도 로직
+async def send_message_with_retry(channel, content, max_retries=3):
+    for attempt in range(max_retries):
+        try:
+            await channel.send(content)
+            await asyncio.sleep(RATE_LIMIT_DELAY)  # API 호출 간 지연
+            return
+        except discord.HTTPException as e:
+            if e.status == 429:
+                retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
+                print(f"429 에러 발생, {retry_after}초 후 재시도...")
+                await asyncio.sleep(retry_after)
+            else:
+                raise e
+    raise discord.HTTPException("최대 재시도 횟수 초과")
+
 # Flex 작업 처리
 async def process_flex_queue():
     while True:
@@ -369,11 +388,10 @@ async def process_flex_queue():
                             else:
                                 has_role = False
                                 role = discord.utils.get(guild.roles, name=role_name) if role_name else None
-                                if role and role in member.roles:
-                                    has_role = True
-
                                 race_role_name = answers.get("종족")
                                 race_role = discord.utils.get(guild.roles, name=race_role_name) if race_role_name else None
+                                if role and role in member.roles:
+                                    has_role = True
                                 if race_role and race_role in member.roles:
                                     has_role = True
 
@@ -387,19 +405,25 @@ async def process_flex_queue():
                                         await member.add_roles(race_role)
                                         result += f" (종족 `{race_role_name}` 부여했어! 😊)"
 
-                                # 캐릭터-목록 채널에 게시
                                 char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
                                 if char_channel:
-                                    await char_channel.send(f"{member.mention}의 캐릭터:\n{description}")
+                                    await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{description}")
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
+                        else:
+                            # 실패 시 문제 있는 필드 식별
+                            failed_fields = []
+                            for field in answers:
+                                if field in reason:  # 간단히 reason에 필드 이름이 포함된 경우로 판단
+                                    failed_fields.append(field)
+                            result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                        await channel.send(f"{member.mention} {result}")
+                        await send_message_with_retry(channel, f"{member.mention} {result}")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("completed", task_id))
                         await db.commit()
 
                     except Exception as e:
-                        await channel.send(f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+                        await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("failed", task_id))
                         await db.commit()
         await asyncio.sleep(1)
@@ -408,7 +432,6 @@ async def process_flex_queue():
 answers = {}
 @bot.tree.command(name="캐릭터_신청", description="캐릭터를 신청해! 순차적으로 질문에 답해줘~")
 async def character_apply(interaction: discord.Interaction):
-    await interaction.response.defer()
     global answers
     answers = {}
     user = interaction.user
@@ -416,28 +439,32 @@ async def character_apply(interaction: discord.Interaction):
 
     can_proceed, error_message = await check_cooldown(str(user.id))
     if not can_proceed:
-        await interaction.followup.send(error_message)
+        await interaction.response.send_message(error_message, ephemeral=True)
         return
 
-    await interaction.followup.send("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊")
+    await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
+    await asyncio.sleep(RATE_LIMIT_DELAY)  # 초기 응답 후 지연
 
     for question in questions:
         while True:
-            await channel.send(f"{user.mention} {question['prompt']}")
+            await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
             try:
                 response = await bot.wait_for(
                     "message",
                     check=lambda m: m.author == user and m.channel == channel,
                     timeout=300.0
                 )
-                answer = response.content
+                answer = response.content.strip()
                 if question["validator"](answer):
                     answers[question["field"]] = answer
                     break
                 else:
-                    await channel.send(question["error_message"])
+                    await send_message_with_retry(channel, question["error_message"])
             except asyncio.TimeoutError:
-                await channel.send(f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                return
+            except discord.HTTPException as e:
+                await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                 return
 
     while True:
@@ -449,23 +476,27 @@ async def character_apply(interaction: discord.Interaction):
         for fields, message in errors:
             error_msg += f"- {message}\n"
             fields_to_correct.update(fields)
-        await channel.send(f"{user.mention} {error_msg}다시 입력해줘~")
+        await send_message_with_retry(channel, f"{user.mention} {error_msg}다시 입력해줘~")
 
         for field in fields_to_correct:
             question = next(q for q in questions if q["field"] == field)
             while True:
-                await channel.send(f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
-                response = await bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == user and m.channel == channel,
-                    timeout=300.0
-                )
-                answer = response.content
-                if question["validator"](answer):
-                    answers[field] = answer
-                    break
-                else:
-                    await channel.send(question["error_message"])
+                await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                try:
+                    response = await bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == user and m.channel == channel,
+                        timeout=300.0
+                    )
+                    answer = response.content.strip()
+                    if question["validator"](answer):
+                        answers[field] = answer
+                        break
+                    else:
+                        await send_message_with_retry(channel, question["error_message"])
+                except asyncio.TimeoutError:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                    return
 
     description = "\n".join([f"{field}: {answers[field]}" for field in answers])
     allowed_roles, _ = await get_settings(interaction.guild.id)
@@ -477,7 +508,7 @@ async def character_apply(interaction: discord.Interaction):
         description=description
     )
     await queue_flex_task(str(uuid.uuid4()), description, str(user.id), str(channel.id), None, "character_check", prompt)
-    await channel.send(f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
+    await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
 
 @bot.event
 async def on_ready():
