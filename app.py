@@ -65,15 +65,15 @@ DEFAULT_PROMPT = """
 - 금지 단어: {banned_words} (이미 확인됨).
 - 필수 항목: {required_fields} (이미 확인됨).
 - 허용 종족: {allowed_races}.
-- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~5) (이미 확인됨).
-- 설명은 현실적이고 역할극에 적합해야 해.
+- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~6) (이미 확인됨).
+- 설명은 역할극에 적합해야 하며, 간단한 일상적 배경도 허용.
 - 시간/현실 조작 능력 금지.
-- 과거사: 시간 여행, 초자연적 능력, 비현실적 사건(예: 세계 구함) 금지.
+- 과거사: 시간 여행, 초자연적 능력(마법 제외), 비현실적 사건(예: 세계 구함, 우주 정복) 금지. 최소 20자면 충분히 구체적이며, 간단한 배경(예: 학교 입학, 가정사)도 통과.
 - 나이: 1~5000살 (이미 확인됨).
 - 소속: A.M.L, 하람고, 하람고등학교만 허용.
-- 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~16, 마법사 5~17, 요괴 5~18.
+- 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~18, 마법사 5~19, 요괴 5~20.
 - 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
-- 기술/마법/요력 위력은 1~5만 허용.
+- 기술/마법/요력 위력은 1~6만 허용.
 - 기술/마법/요력은 시간, 범위, 위력 등이 명확해야 함.
 - 기술/마법/요력 개수는 6개 이하.
 
@@ -194,9 +194,9 @@ questions = [
     },
     {
         "field": "사용 기술/마법/요력 위력",
-        "prompt": "사용 기술/마법/요력의 위력을 입력해주세요. (1~5)",
-        "validator": lambda x: x.isdigit() and 1 <= int(x) <= 5,
-        "error_message": "위력은 1에서 5 사이의 숫자여야 합니다.",
+        "prompt": "사용 기술/마법/요력의 위력을 입력해주세요. (1~6)",
+        "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6,
+        "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.",
         "is_tech": True
     },
     {
@@ -349,12 +349,12 @@ def validate_all(answers):
     race = answers["종족"]
     attributes = [int(answers[attr]) for attr in ["체력", "지능", "이동속도", "힘", "냉철"]]
     attr_sum = sum(attributes)
-    if race == "인간" and not (5 <= attr_sum <= 16):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "인간의 속성 합계는 5~16이어야 합니다."))
-    elif race == "마법사" and not (5 <= attr_sum <= 17):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "마법사의 속성 합계는 5~17이어야 합니다."))
-    elif race == "요괴" and not (5 <= attr_sum <= 18):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "요괴의 속성 합계는 5~18이어야 합니다."))
+    if race == "인간" and not (5 <= attr_sum <= 18):
+        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "인간의 속성 합계는 5~18이어야 합니다."))
+    elif race == "마법사" and not (5 <= attr_sum <= 19):
+        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "마법사의 속성 합계는 5~19이어야 합니다."))
+    elif race == "요괴" and not (5 <= attr_sum <= 20):
+        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "요괴의 속성 합계는 5~20이어야 합니다."))
     
     # 기술/마법/요력 개수 체크
     tech_count = sum(1 for field in answers if field.startswith("사용 기술/마법/요력_"))
@@ -475,7 +475,7 @@ async def process_flex_queue():
                                         await member.add_roles(race_role)
                                         result += f" (종족 `{race_role_name}` 부여했어! 😊)"
 
-                                # 새로운 출력 양식으로 description 재구성
+                                # 출력 양식
                                 formatted_description = (
                                     f"이름: {answers.get('이름', '미기재')}\n"
                                     f"성별: {answers.get('성별', '미기재')}\n"
@@ -498,7 +498,6 @@ async def process_flex_queue():
                                     f"힘: {answers.get('힘', '미기재')}\n"
                                     f"냉철: {answers.get('냉철', '미기재')}\n"
                                 )
-                                # 기술/마법/요력 나열
                                 techs = []
                                 for i in range(6):
                                     tech_name = answers.get(f"사용 기술/마법/요력_{i}")
@@ -652,7 +651,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     return
 
-    # 심사용 description은 기존 방식 유지
+    # 심사용 description
     description = "\n".join([f"{field}: {answers[field]}" for field in answers])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
