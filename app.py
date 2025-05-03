@@ -445,10 +445,10 @@ async def process_flex_queue():
                                                 await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}")
                                         else:
                                             thread = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
-                                            thread_id = str(thread.id)
+                                            thread_id = str(thread.id) if thread else None
                                     else:
                                         thread = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
-                                        thread_id = str(thread.id)
+                                        thread_id = str(thread.id) if thread else None
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
                         else:
@@ -595,7 +595,8 @@ async def character_apply(interaction: discord.Interaction):
         allowed_roles=', '.join(allowed_roles),
         description=description
     )
-    await queue_flex_task(str(uuid.uuid4()), description, str(user.id), str(channel.id), None, "character_check", prompt)
+    character_id = str(uuid.uuid4())
+    await queue_flex_task(character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
     await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
 
 # 캐릭터 수정 명령어
