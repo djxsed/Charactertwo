@@ -275,10 +275,10 @@ async def get_result(description):
         async with db.execute("SELECT pass, reason, role_name FROM results WHERE description_hash = ?", (description_hash,)) as cursor:
             return await cursor.fetchone()
 
-# 사용자별 캐릭터 조회
+# 사용자별 캐릭터 조회 (대소문자 구분 없이)
 async def find_characters_by_name(name, user_id):
     async with aiosqlite.connect("characters.db") as db:
-        async with db.execute("SELECT character_id, character_name, race, age, gender, thread_id FROM results WHERE character_name = ? AND user_id = ? AND pass = 1", (name, user_id)) as cursor:
+        async with db.execute("SELECT character_id, character_name, race, age, gender, thread_id FROM results WHERE LOWER(character_name) = LOWER(?) AND user_id = ? AND pass = 1", (name, user_id)) as cursor:
             return await cursor.fetchall()
 
 # 캐릭터 정보 조회
@@ -319,11 +319,13 @@ async def send_message_with_retry(channel, content, answers=None, max_retries=3)
                     content=content,
                     auto_archive_duration=10080
                 )
-                return thread
+                # ThreadWithMessage 객체 처리
+                thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
+                return thread, thread_id
             else:
                 await channel.send(content)
+                return None, None
             await asyncio.sleep(RATE_LIMIT_DELAY)
-            return
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
@@ -444,11 +446,11 @@ async def process_flex_queue():
                                             if messages:
                                                 await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}")
                                         else:
-                                            thread = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
-                                            thread_id = str(thread.id) if thread else None
+                                            thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
+                                            thread_id = new_thread_id
                                     else:
-                                        thread = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
-                                        thread_id = str(thread.id) if thread else None
+                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
+                                        thread_id = new_thread_id
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
                         else:
