@@ -100,7 +100,7 @@ questions = [
     {"field": "나이", "prompt": "나이를 입력해주세요. (1~5000)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 5000, "error_message": "나이는 1에서 5000 사이의 숫자여야 합니다."},
     {"field": "키/몸무게", "prompt": "키와 몸무게를 입력해주세요. (예: 170cm/60kg)", "validator": lambda x: True, "error_message": ""},
     {"field": "성격", "prompt": "성격을 설명해주세요. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "성격 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."},
-    {"field": "외모", "prompt": "외모를 설명하거나 이미지를 업로드해주세요. (설명 최소 20자, 또는 이미지)", "validator": lambda x: (len(x) >= 20 if isinstance(x, str) else True), "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력하거나 이미지를 업로드해주세요."},
+    {"field": "외모", "prompt": "외모를 설명(최소 20자)하거나 이미지를 업로드해주세요.", "validator": lambda x: (len(x) >= 20 if isinstance(x, str) and not x.startswith("이미지_") else True), "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력하거나 이미지를 업로드해주세요."},
     {"field": "소속", "prompt": "소속을 입력해주세요. (학생, 선생님, A.M.L 중 하나)", "validator": lambda x: x in ["학생", "선생님", "A.M.L"], "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."},
     {"field": "학년 및 반", "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)", "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x), "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.", "condition": lambda answers: answers.get("소속") == "학생"},
     {"field": "담당 과목 및 학년, 반", "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)", "validator": lambda x: len(x) > 0, "error_message": "담당 과목과 학년, 반을 입력해주세요.", "condition": lambda answers: answers.get("소속") == "선생님"},
@@ -311,24 +311,25 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
-# 429 에러 재시도 로직
-async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None):
+# 429 에러 재시도 로직 (이미지 첨부 지원 추가)
+async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None):
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
-                await interaction.followup.send(content)
+                await interaction.followup.send(content, files=files)
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
                 thread = await channel.create_thread(
                     name=thread_name,
                     content=content,
-                    auto_archive_duration=10080
+                    auto_archive_duration=10080,
+                    files=files
                 )
                 thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
                 return thread, thread_id
             else:
-                await channel.send(content)
+                await channel.send(content, files=files)
                 return None, None
             await asyncio.sleep(RATE_LIMIT_DELAY)
         except discord.HTTPException as e:
@@ -421,7 +422,7 @@ async def process_flex_queue():
                                 formatted_description += (
                                     f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
                                     f"성격: {answers.get('성격', '미기재')}\n"
-                                    f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) else '이미지로 등록됨'}\n\n"
+                                    f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) and not answers.get('외모').startswith('이미지_') else '이미지로 등록됨'}\n\n"
                                     f"체력: {answers.get('체력', '미기재')}\n"
                                     f"지능: {answers.get('지능', '미기재')}\n"
                                     f"이동속도: {answers.get('이동속도', '미기재')}\n"
@@ -438,24 +439,29 @@ async def process_flex_queue():
                                 formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력: 없음\n"
                                 formatted_description += "\n"
                                 formatted_description += (
-                                    f"과거사: ramen.get('과거사', '미기재')}\n"
+                                    f"과거사: {answers.get('과거사', '미기재')}\n"
                                     f"특징: {answers.get('특징', '미기재')}\n\n"
                                     f"관계: {answers.get('관계', '미기재')}"
                                 )
 
                                 char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
+                                files = []
+                                if answers.get("외모", "").startswith("이미지_"):
+                                    image_url = answers["외모"].replace("이미지_", "")
+                                    files.append(discord.File(fp=await (await bot.http.get(image_url)).read(), filename="appearance.png"))
+
                                 if char_channel:
                                     if thread_id:
                                         thread = bot.get_channel(int(thread_id))
                                         if thread:
                                             messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
                                             if messages:
-                                                await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}")
+                                                await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files)
                                         else:
-                                            thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name)
+                                            thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name, files=files)
                                             thread_id = new_thread_id
                                     else:
-                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name)
+                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name, files=files)
                                         thread_id = new_thread_id
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
@@ -554,7 +560,10 @@ async def character_apply(interaction: discord.Interaction):
                         check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                    if question["field"] == "외모" and response.attachments:
+                        answer = f"이미지_{response.attachments[0].url}"
+                    else:
+                        answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                     if question["validator"](answer):
                         answers[question["field"]] = answer
                         break
@@ -590,17 +599,21 @@ async def character_apply(interaction: discord.Interaction):
                         check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                    if field == "외모" and response.attachments:
+                        answer = f"이미지_{response.attachments[0].url}"
+                    else:
+                        answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                     if question["validator"](answer):
                         answers[field] = answer
                         break
                     else:
                         await send_message_with_retry(channel, question["error_message"])
                 except asyncio.TimeoutError:
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
 
-    description = "\n".join([f"{field}: {answers[field]}" for field in answers])
+    # AI 심사에서 외모 필드 제외
+    description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
         banned_words=', '.join(BANNED_WORDS),
@@ -653,7 +666,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         if not all(0 <= i < len(EDITABLE_FIELDS) for i in selected_indices):
             await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
             return
-    except (ValueError, asyncio.TimeoutError):
+    exceptValueError, asyncio.TimeoutError):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
 
@@ -672,7 +685,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     check=check,
                     timeout=300.0
                 )
-                answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                if question["field"] == "외모" and response.attachments:
+                    answer = f"이미지_{response.attachments[0].url}"
+                else:
+                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                 if question["validator"](answer):
                     answers[question["field"]] = answer
                     break
@@ -793,7 +809,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                    if field == "외모" and response.attachments:
+                        answer = f"이미지_{response.attachments[0].url}"
+                    else:
+                        answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                     if question["validator"](answer):
                         answers[field] = answer
                         break
@@ -803,7 +822,8 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
 
-    description = "\n".join([f"{field}: {answers[field]}" for field in answers])
+    # AI 심사에서 외모 필드 제외
+    description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
         banned_words=', '.join(BANNED_WORDS),
