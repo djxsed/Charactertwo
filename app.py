@@ -683,6 +683,16 @@ async def character_edit(interaction: discord.Interaction):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
 
+    @bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
+async def character_list(interaction: discord.Interaction):
+    user = interaction.user
+    characters = await find_characters_by_name("", str(user.id))
+    if not characters:
+        await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
+        return
+    char_list = "\n".join([f"- {c[1]} (종족: {c[2]}, 나이: {c[3]}, 성별: {c[4]})" for c in characters])
+    await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
+
     # 일반 항목 수정
     for index in selected_indices:
         if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
