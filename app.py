@@ -666,7 +666,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         if not all(0 <= i < len(EDITABLE_FIELDS) for i in selected_indices):
             await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
             return
-    exceptValueError, asyncio.TimeoutError):
+    except (ValueError, asyncio.TimeoutError):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
 
