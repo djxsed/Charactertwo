@@ -13,6 +13,8 @@ from collections import deque
 from flask import Flask
 import threading
 import time
+import aiohttp
+import requests
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -25,6 +27,7 @@ def home():
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DB_PATH = os.getenv("DB_PATH", "/data/characters.db")  # Render Persistent Disk 사용
 
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -124,9 +127,11 @@ EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술
 # Flex 작업 큐
 flex_queue = deque()
 
-# 데이터베이스 초기화
+# 데이터베이스 초기화 (Persistent Disk 사용)
 async def init_db():
-    async with aiosqlite.connect("characters.db") as db:
+    if not os.path.exists(os.path.dirname(DB_PATH)):
+        os.makedirs(os.path.dirname(DB_PATH))
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS results (
                 character_id TEXT PRIMARY KEY,
@@ -184,7 +189,7 @@ async def init_db():
 
 # 서버별 설정 조회
 async def get_settings(guild_id):
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT allowed_roles, check_channel_name FROM settings WHERE guild_id = ?", (str(guild_id),)) as cursor:
             row = await cursor.fetchone()
             if row:
@@ -195,7 +200,7 @@ async def get_settings(guild_id):
 
 # 서버별 프롬프트 조회
 async def get_prompt(guild_id, allowed_roles):
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT prompt_content FROM prompts WHERE guild_id = ?", (str(guild_id),)) as cursor:
             row = await cursor.fetchone()
             if row:
@@ -211,7 +216,7 @@ async def get_prompt(guild_id, allowed_roles):
 # 쿨다운 및 요청 횟수 체크
 async def check_cooldown(user_id):
     now = datetime.utcnow()
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT last_request, request_count, reset_date FROM cooldowns WHERE user_id = ?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if not row:
@@ -263,7 +268,7 @@ def validate_all(answers):
 async def save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, post_name):
     description_hash = hashlib.md5(description.encode()).hexdigest()
     timestamp = datetime.utcnow().isoformat()
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, user_id, character_name, race, age, gender, thread_id, description, timestamp, post_name)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -273,19 +278,19 @@ async def save_result(character_id, description, pass_status, reason, role_name,
 # 캐릭터 심사 결과 조회
 async def get_result(description):
     description_hash = hashlib.md5(description.encode()).hexdigest()
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT pass, reason, role_name FROM results WHERE description_hash = ?", (description_hash,)) as cursor:
             return await cursor.fetchone()
 
 # 사용자별 캐릭터 조회 (대소문자 구분 없이)
 async def find_characters_by_post_name(post_name, user_id):
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT character_id, character_name, race, age, gender, thread_id, post_name FROM results WHERE LOWER(post_name) = LOWER(?) AND user_id = ? AND pass = 1", (post_name, user_id)) as cursor:
             return await cursor.fetchall()
 
 # 캐릭터 정보 조회
 async def get_character_info(character_id):
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("SELECT description FROM results WHERE character_id = ?", (character_id,)) as cursor:
             row = await cursor.fetchone()
             if row:
@@ -302,7 +307,7 @@ async def get_character_info(character_id):
 async def queue_flex_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
     task_id = str(uuid.uuid4())
     created_at = datetime.utcnow().isoformat()
-    async with aiosqlite.connect("characters.db") as db:
+    async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             INSERT INTO flex_tasks (task_id, character_id, description, user_id, channel_id, thread_id, type, prompt, status, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -311,7 +316,7 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
-# 429 에러 재시도 로직 (이미지 첨부 지원 추가)
+# 429 에러 재시도 로직 (이미지 다운로드 및 첨부 개선)
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None):
     for attempt in range(max_retries):
         try:
@@ -341,12 +346,21 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                 raise e
     raise discord.HTTPException("최대 재시도 횟수 초과")
 
+# 이미지 다운로드 함수
+async def download_image(image_url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(image_url) as response:
+            if response.status == 200:
+                content = await response.read()
+                return discord.File(fp=content, filename="appearance.png")
+    return None
+
 # Flex 작업 처리
 async def process_flex_queue():
     while True:
         if flex_queue:
             task_id = flex_queue.popleft()
-            async with aiosqlite.connect("characters.db") as db:
+            async with aiosqlite.connect(DB_PATH) as db:
                 async with db.execute("SELECT * FROM flex_tasks WHERE task_id = ?", (task_id,)) as cursor:
                     task = await cursor.fetchone()
                     if not task:
@@ -382,6 +396,13 @@ async def process_flex_queue():
                         channel = bot.get_channel(int(channel_id))
                         guild = channel.guild
                         member = guild.get_member(int(user_id))
+
+                        files = []
+                        if answers.get("외모", "").startswith("이미지_"):
+                            image_url = answers["외모"].replace("이미지_", "")
+                            file = await download_image(image_url)
+                            if file:
+                                files.append(file)
 
                         if pass_status:
                             allowed_roles, _ = await get_settings(guild.id)
@@ -445,18 +466,13 @@ async def process_flex_queue():
                                 )
 
                                 char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
-                                files = []
-                                if answers.get("외모", "").startswith("이미지_"):
-                                    image_url = answers["외모"].replace("이미지_", "")
-                                    files.append(discord.File(fp=await (await bot.http.get(image_url)).read(), filename="appearance.png"))
-
                                 if char_channel:
                                     if thread_id:
                                         thread = bot.get_channel(int(thread_id))
                                         if thread:
                                             messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
                                             if messages:
-                                                await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files)
+                                                await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
                                         else:
                                             thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name, files=files)
                                             thread_id = new_thread_id
@@ -722,139 +738,4 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     for tech_question in questions:
                         if tech_question.get("is_tech"):
                             while True:
-                                field = f"{tech_question['field']}_{techs[idx][0].split('_')[1]}"
-                                await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
-                                def check(m):
-                                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                                try:
-                                    response = await bot.wait_for(
-                                        "message",
-                                        check=check,
-                                        timeout=300.0
-                                    )
-                                    tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
-                                    if tech_question["validator"](tech_answer):
-                                        answers[field] = tech_answer
-                                        break
-                                    else:
-                                        await send_message_with_retry(channel, tech_question["error_message"])
-                                except asyncio.TimeoutError:
-                                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                                    return
-            elif action == "a" and len(techs) < 6:
-                tech_counter = len(techs)
-                for tech_question in questions:
-                    if tech_question.get("is_tech"):
-                        while True:
-                            field = f"{tech_question['field']}_{tech_counter}"
-                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
-                            def check(m):
-                                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                            try:
-                                response = await bot.wait_for(
-                                    "message",
-                                    check=check,
-                                    timeout=300.0
-                                )
-                                tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
-                                if tech_question["validator"](tech_answer):
-                                    answers[field] = tech_answer
-                                    break
-                                else:
-                                    await send_message_with_retry(channel, tech_question["error_message"])
-                            except asyncio.TimeoutError:
-                                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                                return
-                techs.append((f"사용 기술/마법/요력_{tech_counter}", answers[f"사용 기술/마법/요력_{tech_counter}"], answers[f"사용 기술/마법/요력 위력_{tech_counter}"], answers[f"사용 기술/마법/요력 설명_{tech_counter}"]))
-            elif action == "d" and techs:
-                await send_message_with_retry(channel, f"{user.mention} 삭제할 기술 번호를 입력해줘 (1-{len(techs)})")
-                try:
-                    response = await bot.wait_for(
-                        "message",
-                        check=lambda m: m.author == user and m.channel == channel,
-                        timeout=300.0
-                    )
-                    idx = int(response.content.strip()) - 1
-                    if 0 <= idx < len(techs):
-                        key = techs[idx][0]
-                        del answers[key]
-                        del answers[f"사용 기술/마법/요력 위력_{key.split('_')[1]}"]
-                        del answers[f"사용 기술/마법/요력 설명_{key.split('_')[1]}"]
-                    else:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
-                except (ValueError, asyncio.TimeoutError):
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
-                    return
-
-    while True:
-        errors = validate_all(answers)
-        if not errors:
-            break
-        fields_to_correct = set()
-        error_msg = "다음 문제들이 있어:\n"
-        for fields, message in errors:
-            error_msg += f"- {message}\n"
-            fields_to_correct.update(fields)
-        await send_message_with_retry(channel, f"{user.mention} {error_msg}다시 입력해줘~")
-
-        for field in fields_to_correct:
-            question = next(q for q in questions if q["field"] == field)
-            while True:
-                await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
-                def check(m):
-                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                try:
-                    response = await bot.wait_for(
-                        "message",
-                        check=check,
-                        timeout=300.0
-                    )
-                    if field == "외모" and response.attachments:
-                        answer = f"이미지_{response.attachments[0].url}"
-                    else:
-                        answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
-                    if question["validator"](answer):
-                        answers[field] = answer
-                        break
-                    else:
-                        await send_message_with_retry(channel, question["error_message"])
-                except asyncio.TimeoutError:
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                    return
-
-    # AI 심사에서 외모 필드 제외
-    description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
-    allowed_roles, _ = await get_settings(interaction.guild.id)
-    prompt = DEFAULT_PROMPT.format(
-        banned_words=', '.join(BANNED_WORDS),
-        required_fields=', '.join(REQUIRED_FIELDS),
-        allowed_races=', '.join(DEFAULT_ALLOWED_RACES),
-        allowed_roles=', '.join(allowed_roles),
-        description=description
-    )
-    await queue_flex_task(character_id, description, str(user.id), str(channel.id), thread_id, "character_check", prompt)
-    await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
-
-@bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
-async def character_list(interaction: discord.Interaction):
-    user = interaction.user
-    async with aiosqlite.connect("characters.db") as db:
-        async with db.execute("SELECT character_name, race, age, gender, post_name FROM results WHERE user_id = ? AND pass = 1", (str(user.id),)) as cursor:
-            characters = await cursor.fetchall()
-    if not characters:
-        await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
-        return
-    char_list = "\n".join([f"- {c[0]} (포스트: {c[4]})" for c in characters])
-    await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
-
-@bot.event
-async def on_ready():
-    await init_db()
-    print(f'봇이 로그인했어: {bot.user}')
-    await bot.tree.sync()
-    bot.loop.create_task(process_flex_queue())
-
-# Flask와 디스코드 봇 실행
-if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
-    bot.run(DISCORD_TOKEN)
+                                field = f"{tech_question['field']
