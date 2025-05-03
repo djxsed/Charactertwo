@@ -232,6 +232,9 @@ questions = [
     },
 ]
 
+# 수정 가능한 항목 목록
+EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술/마법/요력 추가 여부"]
+
 # Flex 작업 큐
 flex_queue = deque()
 
@@ -245,6 +248,9 @@ async def init_db():
                 pass BOOLEAN,
                 reason TEXT,
                 role_name TEXT,
+                user_id TEXT,
+                character_name TEXT,
+                description TEXT,
                 timestamp TEXT
             )
         """)
@@ -364,14 +370,14 @@ def validate_all(answers):
     return errors
 
 # 캐릭터 심사 결과 저장
-async def save_result(character_id, description, pass_status, reason, role_name):
+async def save_result(character_id, description, pass_status, reason, role_name, user_id, character_name):
     description_hash = hashlib.md5(description.encode()).hexdigest()
     timestamp = datetime.utcnow().isoformat()
     async with aiosqlite.connect("characters.db") as db:
         await db.execute("""
-            INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (character_id, description_hash, pass_status, reason, role_name, timestamp))
+            INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, user_id, character_name, description, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (character_id, description_hash, pass_status, reason, role_name, user_id, character_name, description, timestamp))
         await db.commit()
 
 # 캐릭터 심사 결과 조회
@@ -380,6 +386,27 @@ async def get_result(description):
     async with aiosqlite.connect("characters.db") as db:
         async with db.execute("SELECT pass, reason, role_name FROM results WHERE description_hash = ?", (description_hash,)) as cursor:
             return await cursor.fetchone()
+
+# 사용자별 캐릭터 목록 조회
+async def get_user_characters(user_id):
+    async with aiosqlite.connect("characters.db") as db:
+        async with db.execute("SELECT character_id, character_name FROM results WHERE user_id = ? AND pass = 1", (user_id,)) as cursor:
+            return await cursor.fetchall()
+
+# 캐릭터 정보 조회
+async def get_character_info(character_id):
+    async with aiosqlite.connect("characters.db") as db:
+        async with db.execute("SELECT description FROM results WHERE character_id = ?", (character_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                desc = row[0]
+                answers = {}
+                for line in desc.split("\n"):
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        answers[key] = value
+                return answers
+            return None
 
 # Flex 작업 큐에 추가
 async def queue_flex_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
@@ -445,7 +472,13 @@ async def process_flex_queue():
                         role_name = result.split("역할: ")[1] if pass_status else None
                         reason = result[2:] if not pass_status else "통과"
 
-                        await save_result(character_id, description, pass_status, reason, role_name)
+                        character_name = None
+                        for line in description.split("\n"):
+                            if line.startswith("이름:"):
+                                character_name = line.split(": ", 1)[1]
+                                break
+
+                        await save_result(character_id, description, pass_status, reason, role_name, user_id, character_name)
 
                         channel = bot.get_channel(int(channel_id))
                         guild = channel.guild
@@ -504,8 +537,9 @@ async def process_flex_queue():
                                     if tech_name:
                                         tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
                                         tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
-                                        techs.append(f"{tech_name} (위력: {tech_power}, 설명: {tech_desc})")
-                                formatted_description += f"사용 기술/마법/요력: {', '.join(techs) if techs else '없음'}\n\n"
+                                        techs.append(f"<{tech_name}> {tech_power}\n설명: {tech_desc}")
+                                formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력: 없음\n"
+                                formatted_description += "\n"
                                 formatted_description += (
                                     f"과거사: {answers.get('과거사', '미기재')}\n"
                                     f"특징: {answers.get('특징', '미기재')}\n\n"
@@ -663,6 +697,160 @@ async def character_apply(interaction: discord.Interaction):
     )
     await queue_flex_task(str(uuid.uuid4()), description, str(user.id), str(channel.id), None, "character_check", prompt)
     await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
+
+# 캐릭터 수정 명령어
+@bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 캐릭터와 항목을 선택해줘~")
+async def character_edit(interaction: discord.Interaction):
+    global answers, tech_counter
+    user = interaction.user
+    channel = interaction.channel
+
+    can_proceed, error_message = await check_cooldown(str(user.id))
+    if not can_proceed:
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    # 사용자 캐릭터 목록 조회
+    characters = await get_user_characters(str(user.id))
+    if not characters:
+        await interaction.response.send_message("❌ 등록된 캐릭터가 없어! 먼저 /캐릭터_신청을 해줘~ 🥺", ephemeral=True)
+        return
+
+    # 캐릭터 목록 표시
+    character_list = "\n".join([f"{i+1}. {name}" for i, (_, name) in enumerate(characters)])
+    await interaction.response.send_message(f"✅ 수정할 캐릭터를 번호로 선택해줘:\n{character_list}", ephemeral=True)
+    await asyncio.sleep(RATE_LIMIT_DELAY)
+
+    try:
+        response = await bot.wait_for(
+            "message",
+            check=lambda m: m.author == user and m.channel == channel,
+            timeout=300.0
+        )
+        choice = response.content.strip()
+        if not choice.isdigit() or int(choice) < 1 or int(choice) > len(characters):
+            await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
+            return
+        selected_character_id, selected_character_name = characters[int(choice) - 1]
+    except asyncio.TimeoutError:
+        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+        return
+
+    # 기존 캐릭터 정보 로드
+    answers = await get_character_info(selected_character_id)
+    if not answers:
+        await send_message_with_retry(channel, f"{user.mention} ❌ 캐릭터 정보를 불러올 수 없어! 다시 시도해~ 🥹")
+        return
+
+    # 수정 가능한 항목 표시
+    fields_list = "\n".join([f"{i+1}. {field}" for i, field in enumerate(EDITABLE_FIELDS)])
+    await send_message_with_retry(channel, f"{user.mention} 수정할 항목을 번호로 선택해줘:\n{fields_list}")
+    
+    try:
+        response = await bot.wait_for(
+            "message",
+            check=lambda m: m.author == user and m.channel == channel,
+            timeout=300.0
+        )
+        field_choice = response.content.strip()
+        if not field_choice.isdigit() or int(field_choice) < 1 or int(field_choice) > len(EDITABLE_FIELDS):
+            await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
+            return
+        selected_field = EDITABLE_FIELDS[int(field_choice) - 1]
+    except asyncio.TimeoutError:
+        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+        return
+
+    # 선택한 항목 수정
+    question = next(q for q in questions if q["field"] == selected_field)
+    while True:
+        await send_message_with_retry(channel, f"{user.mention} {selected_field}을 수정해: {question['prompt']}")
+        try:
+            response = await bot.wait_for(
+                "message",
+                check=lambda m: m.author == user and m.channel == channel,
+                timeout=300.0
+            )
+            answer = response.content.strip()
+            if question["validator"](answer):
+                answers[selected_field] = answer
+                break
+            else:
+                await send_message_with_retry(channel, question["error_message"])
+        except asyncio.TimeoutError:
+            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+            return
+
+    # 기술/마법/요력 관련 항목 조정
+    if selected_field.startswith("사용 기술/마법/요력"):
+        tech_index = int(selected_field.split("_")[-1])
+        for tech_field in ["사용 기술/마법/요력", "사용 기술/마법/요력 위력", "사용 기술/마법/요력 설명"]:
+            if tech_field == selected_field:
+                continue
+            tech_question = next(q for q in questions if q["field"] == tech_field)
+            while True:
+                field = f"{tech_field}_{tech_index}"
+                await send_message_with_retry(channel, f"{user.mention} {field}을 입력해: {tech_question['prompt']}")
+                try:
+                    response = await bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == user and m.channel == channel,
+                        timeout=300.0
+                    )
+                    tech_answer = response.content.strip()
+                    if tech_question["validator"](tech_answer):
+                        answers[field] = tech_answer
+                        break
+                    else:
+                        await send_message_with_retry(channel, tech_question["error_message"])
+                except asyncio.TimeoutError:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                    return
+
+    # 검증
+    while True:
+        errors = validate_all(answers)
+        if not errors:
+            break
+        fields_to_correct = set()
+        error_msg = "다음 문제들이 있어:\n"
+        for fields, message in errors:
+            error_msg += f"- {message}\n"
+            fields_to_correct.update(fields)
+        await send_message_with_retry(channel, f"{user.mention} {error_msg}다시 입력해줘~")
+
+        for field in fields_to_correct:
+            question = next(q for q in questions if q["field"] == field)
+            while True:
+                await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                try:
+                    response = await bot.wait_for(
+                        "message",
+                        check=lambda m: m.author == user and m.channel == channel,
+                        timeout=300.0
+                    )
+                    answer = response.content.strip()
+                    if question["validator"](answer):
+                        answers[field] = answer
+                        break
+                    else:
+                        await send_message_with_retry(channel, question["error_message"])
+                except asyncio.TimeoutError:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                    return
+
+    # 심사용 description
+    description = "\n".join([f"{field}: {answers[field]}" for field in answers])
+    allowed_roles, _ = await get_settings(interaction.guild.id)
+    prompt = DEFAULT_PROMPT.format(
+        banned_words=', '.join(BANNED_WORDS),
+        required_fields=', '.join(REQUIRED_FIELDS),
+        allowed_races=', '.join(DEFAULT_ALLOWED_RACES),
+        allowed_roles=', '.join(allowed_roles),
+        description=description
+    )
+    await queue_flex_task(selected_character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
+    await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊")
 
 @bot.event
 async def on_ready():
