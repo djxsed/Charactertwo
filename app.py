@@ -140,7 +140,8 @@ async def init_db():
                 gender TEXT,
                 thread_id TEXT,
                 description TEXT,
-                timestamp TEXT
+                timestamp TEXT,
+                post_name TEXT
             )
         """)
         await db.execute("""
@@ -258,14 +259,14 @@ def validate_all(answers):
     return errors
 
 # 캐릭터 심사 결과 저장
-async def save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id):
+async def save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, post_name):
     description_hash = hashlib.md5(description.encode()).hexdigest()
     timestamp = datetime.utcnow().isoformat()
     async with aiosqlite.connect("characters.db") as db:
         await db.execute("""
-            INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, user_id, character_name, race, age, gender, thread_id, description, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (character_id, description_hash, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, description, timestamp))
+            INSERT OR REPLACE INTO results (character_id, description_hash, pass, reason, role_name, user_id, character_name, race, age, gender, thread_id, description, timestamp, post_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (character_id, description_hash, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, description, timestamp, post_name))
         await db.commit()
 
 # 캐릭터 심사 결과 조회
@@ -276,9 +277,9 @@ async def get_result(description):
             return await cursor.fetchone()
 
 # 사용자별 캐릭터 조회 (대소문자 구분 없이)
-async def find_characters_by_name(name, user_id):
+async def find_characters_by_post_name(post_name, user_id):
     async with aiosqlite.connect("characters.db") as db:
-        async with db.execute("SELECT character_id, character_name, race, age, gender, thread_id FROM results WHERE LOWER(character_name) = LOWER(?) AND user_id = ? AND pass = 1", (name, user_id)) as cursor:
+        async with db.execute("SELECT character_id, character_name, race, age, gender, thread_id, post_name FROM results WHERE LOWER(post_name) = LOWER(?) AND user_id = ? AND pass = 1", (post_name, user_id)) as cursor:
             return await cursor.fetchall()
 
 # 캐릭터 정보 조회
@@ -310,12 +311,13 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return task_id
 
 # 429 에러 재시도 로직
-async def send_message_with_retry(channel, content, answers=None, max_retries=3):
+async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3):
     for attempt in range(max_retries):
         try:
             if isinstance(channel, discord.ForumChannel) and answers:
+                thread_name = f"캐릭터: {post_name or answers['이름']} ({answers['종족']})"
                 thread = await channel.create_thread(
-                    name=f"캐릭터: {answers['이름']} ({answers['종족']})",
+                    name=thread_name,
                     content=content,
                     auto_archive_duration=10080
                 )
@@ -375,6 +377,12 @@ async def process_flex_queue():
                         channel = bot.get_channel(int(channel_id))
                         guild = channel.guild
                         member = guild.get_member(int(user_id))
+
+                        post_name = None
+                        async with db.execute("SELECT post_name FROM results WHERE character_id = ?", (character_id,)) as cursor:
+                            row = await cursor.fetchone()
+                            if row:
+                                post_name = row[0]
 
                         if pass_status:
                             allowed_roles, _ = await get_settings(guild.id)
@@ -446,10 +454,10 @@ async def process_flex_queue():
                                             if messages:
                                                 await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}")
                                         else:
-                                            thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
+                                            thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name)
                                             thread_id = new_thread_id
                                     else:
-                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers)
+                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name)
                                         thread_id = new_thread_id
                                 else:
                                     result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
@@ -460,7 +468,7 @@ async def process_flex_queue():
                                     failed_fields.append(field)
                             result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                        await save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id)
+                        await save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, post_name)
                         await send_message_with_retry(channel, f"{member.mention} {result}")
                         await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("completed", task_id))
                         await db.commit()
@@ -489,6 +497,29 @@ async def character_apply(interaction: discord.Interaction):
 
     await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
     await asyncio.sleep(RATE_LIMIT_DELAY)
+
+    # 포스트 이름 질문 추가
+    post_name_question = {"field": "포스트 이름", "prompt": "포스트 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "포스트 이름을 입력해주세요."}
+    while True:
+        await send_message_with_retry(channel, f"{user.mention} {post_name_question['prompt']}")
+        try:
+            response = await bot.wait_for(
+                "message",
+                check=lambda m: m.author == user and m.channel == channel,
+                timeout=300.0
+            )
+            post_name = response.content.strip()
+            if post_name_question["validator"](post_name):
+                answers[post_name_question["field"]] = post_name
+                break
+            else:
+                await send_message_with_retry(channel, post_name_question["error_message"])
+        except asyncio.TimeoutError:
+            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+            return
+        except discord.HTTPException as e:
+            await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+            return
 
     for question in questions:
         if question.get("condition") and not question["condition"](answers):
@@ -599,11 +630,12 @@ async def character_apply(interaction: discord.Interaction):
     )
     character_id = str(uuid.uuid4())
     await queue_flex_task(character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
+    await save_result(character_id, description, False, "심사 중", None, str(user.id), answers.get("이름"), answers.get("종족"), answers.get("나이"), answers.get("성별"), None, answers.get("포스트 이름"))
     await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
 
 # 캐릭터 수정 명령어
-@bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 캐릭터 이름을 입력해줘~")
-async def character_edit(interaction: discord.Interaction):
+@bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 포스트 이름을 입력해줘~")
+async def character_edit(interaction: discord.Interaction, post_name: str):
     global answers, tech_counter
     user = interaction.user
     channel = interaction.channel
@@ -613,59 +645,19 @@ async def character_edit(interaction: discord.Interaction):
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
-    await interaction.response.send_message("✅ 수정 시작! 캐릭터 이름을 알려줘~", ephemeral=True)
-    await send_message_with_retry(channel, f"{user.mention} 수정할 캐릭터 이름을 입력해줘!")
-
-    try:
-        response = await bot.wait_for(
-            "message",
-            check=lambda m: m.author == user and m.channel == channel,
-            timeout=300.0
-        )
-        char_name = response.content.strip()
-    except asyncio.TimeoutError:
-        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-        return
-
-    characters = await find_characters_by_name(char_name, str(user.id))
+    characters = await find_characters_by_post_name(post_name, str(user.id))
     if not characters:
-        await send_message_with_retry(channel, f"{user.mention} ❌ '{char_name}'에 해당하는 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺")
+        await interaction.response.send_message(f"{user.mention} ❌ '{post_name}'에 해당하는 포스트가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
         return
 
-    selected_char = None
-    if len(characters) > 1:
-        char_list = "\n".join([f"{i+1}. {c[1]} (종족: {c[2]}, 나이: {c[3]}, 성별: {c[4]})" for i, c in enumerate(characters)])
-        await send_message_with_retry(channel, f"{user.mention} 같은 이름의 캐릭터가 여러 개야! 아래에서 종족, 나이, 성별을 쉼표로 구분해 입력해줘 (예: 인간, 16, 남성)\n{char_list}")
-        try:
-            response = await bot.wait_for(
-                "message",
-                check=lambda m: m.author == user and m.channel == channel,
-                timeout=300.0
-            )
-            try:
-                race, age, gender = map(str.strip, response.content.split(","))
-            except ValueError:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 입력 형식이 잘못됐어! '종족, 나이, 성별'로 입력해줘~")
-                return
-            for char in characters:
-                if char[2] == race and char[3] == age and char[4] == gender:
-                    selected_char = char
-                    break
-            if not selected_char:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 입력한 정보로 캐릭터를 찾을 수 없어! 다시 확인해줘~ 🥹")
-                return
-        except asyncio.TimeoutError:
-            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-            return
-    else:
-        selected_char = characters[0]
-
-    character_id, _, _, _, _, thread_id = selected_char
+    selected_char = characters[0]
+    character_id, _, _, _, _, thread_id, _ = selected_char
     answers = await get_character_info(character_id)
     if not answers:
-        await send_message_with_retry(channel, f"{user.mention} ❌ 캐릭터 정보를 불러올 수 없어! 다시 시도해~ 🥹")
+        await interaction.response.send_message(f"{user.mention} ❌ 캐릭터 정보를 불러올 수 없어! 다시 시도해~ 🥹", ephemeral=True)
         return
 
+    await interaction.response.send_message(f"✅ '{post_name}' 수정 시작! 수정할 항목 번호를 쉼표로 구분해 입력해줘~", ephemeral=True)
     fields_list = "\n".join([f"{i+1}. {field}" for i, field in enumerate(EDITABLE_FIELDS)])
     await send_message_with_retry(channel, f"{user.mention} 수정할 항목 번호를 쉼표로 구분해 입력해줘 (예: 1,3,5). 기술/마법/요력 수정은 16번 선택!\n{fields_list}")
 
@@ -682,16 +674,6 @@ async def character_edit(interaction: discord.Interaction):
     except (ValueError, asyncio.TimeoutError):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
-
-    @bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
-    async def character_list(interaction: discord.Interaction):
-        user = interaction.user
-        characters = await find_characters_by_name("", str(user.id))
-        if not characters:
-            await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
-            return
-        char_list = "\n".join([f"- {c[1]} (종족: {c[2]}, 나이: {c[3]}, 성별: {c[4]})" for c in characters])
-        await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
 
     # 일반 항목 수정
     for index in selected_indices:
@@ -842,6 +824,18 @@ async def character_edit(interaction: discord.Interaction):
     )
     await queue_flex_task(character_id, description, str(user.id), str(channel.id), thread_id, "character_check", prompt)
     await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊")
+
+@bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
+async def character_list(interaction: discord.Interaction):
+    user = interaction.user
+    async with aiosqlite.connect("characters.db") as db:
+        async with db.execute("SELECT character_name, race, age, gender, post_name FROM results WHERE user_id = ? AND pass = 1", (str(user.id),)) as cursor:
+            characters = await cursor.fetchall()
+    if not characters:
+        await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
+        return
+    char_list = "\n".join([f"- {c[0]} (종족: {c[1]}, 나이: {c[2]}, 성별: {c[3]}, 포스트: {c[4]})" for c in characters])
+    await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
 
 @bot.event
 async def on_ready():
