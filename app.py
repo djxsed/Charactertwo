@@ -93,13 +93,14 @@ DEFAULT_PROMPT = """
 
 # 질문 목록
 questions = [
+    {"field": "포스트 이름", "prompt": "포스트 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "포스트 이름을 입력해주세요."},
     {"field": "종족", "prompt": "종족을 입력해주세요. (인간, 마법사, 요괴 중 하나)", "validator": lambda x: x in ["인간", "마법사", "요괴"], "error_message": "허용되지 않은 종족입니다. 인간, 마법사, 요괴 중에서 선택해주세요."},
     {"field": "이름", "prompt": "캐릭터의 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "이름을 입력해주세요."},
     {"field": "성별", "prompt": "성별을 입력해주세요.", "validator": lambda x: True, "error_message": ""},
     {"field": "나이", "prompt": "나이를 입력해주세요. (1~5000)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 5000, "error_message": "나이는 1에서 5000 사이의 숫자여야 합니다."},
     {"field": "키/몸무게", "prompt": "키와 몸무게를 입력해주세요. (예: 170cm/60kg)", "validator": lambda x: True, "error_message": ""},
     {"field": "성격", "prompt": "성격을 설명해주세요. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "성격 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."},
-    {"field": "외모", "prompt": "외모를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
+    {"field": "외모", "prompt": "외모를 설명하거나 이미지를 업로드해주세요. (설명 최소 20자, 또는 이미지)", "validator": lambda x: (len(x) >= 20 if isinstance(x, str) else True), "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력하거나 이미지를 업로드해주세요."},
     {"field": "소속", "prompt": "소속을 입력해주세요. (학생, 선생님, A.M.L 중 하나)", "validator": lambda x: x in ["학생", "선생님", "A.M.L"], "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."},
     {"field": "학년 및 반", "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)", "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x), "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.", "condition": lambda answers: answers.get("소속") == "학생"},
     {"field": "담당 과목 및 학년, 반", "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)", "validator": lambda x: len(x) > 0, "error_message": "담당 과목과 학년, 반을 입력해주세요.", "condition": lambda answers: answers.get("소속") == "선생님"},
@@ -311,17 +312,19 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return task_id
 
 # 429 에러 재시도 로직
-async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3):
+async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None):
     for attempt in range(max_retries):
         try:
-            if isinstance(channel, discord.ForumChannel) and answers:
-                thread_name = f"캐릭터: {post_name or answers['이름']} ({answers['종족']})"
+            if is_interaction and interaction:
+                await interaction.followup.send(content)
+                return None, None
+            elif isinstance(channel, discord.ForumChannel) and answers:
+                thread_name = f"캐릭터: {post_name}"
                 thread = await channel.create_thread(
                     name=thread_name,
                     content=content,
                     auto_archive_duration=10080
                 )
-                # ThreadWithMessage 객체 처리
                 thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
                 return thread, thread_id
             else:
@@ -373,16 +376,11 @@ async def process_flex_queue():
                         race = answers.get("종족")
                         age = answers.get("나이")
                         gender = answers.get("성별")
+                        post_name = answers.get("포스트 이름")
 
                         channel = bot.get_channel(int(channel_id))
                         guild = channel.guild
                         member = guild.get_member(int(user_id))
-
-                        post_name = None
-                        async with db.execute("SELECT post_name FROM results WHERE character_id = ?", (character_id,)) as cursor:
-                            row = await cursor.fetchone()
-                            if row:
-                                post_name = row[0]
 
                         if pass_status:
                             allowed_roles, _ = await get_settings(guild.id)
@@ -423,7 +421,7 @@ async def process_flex_queue():
                                 formatted_description += (
                                     f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
                                     f"성격: {answers.get('성격', '미기재')}\n"
-                                    f"외모: {answers.get('외모', '미기재')}\n\n"
+                                    f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) else '이미지로 등록됨'}\n\n"
                                     f"체력: {answers.get('체력', '미기재')}\n"
                                     f"지능: {answers.get('지능', '미기재')}\n"
                                     f"이동속도: {answers.get('이동속도', '미기재')}\n"
@@ -436,11 +434,11 @@ async def process_flex_queue():
                                     if tech_name:
                                         tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
                                         tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
-                                        techs.append(f"<{tech_name}> {tech_power}\n설명: {tech_desc}")
+                                        techs.append(f"<{tech_name}> (위력: {tech_power})\n설명: {tech_desc}")
                                 formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력: 없음\n"
                                 formatted_description += "\n"
                                 formatted_description += (
-                                    f"과거사: {answers.get('과거사', '미기재')}\n"
+                                    f"과거사: ramen.get('과거사', '미기재')}\n"
                                     f"특징: {answers.get('특징', '미기재')}\n\n"
                                     f"관계: {answers.get('관계', '미기재')}"
                                 )
@@ -495,31 +493,8 @@ async def character_apply(interaction: discord.Interaction):
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
+    # 즉시 상호작용 응답
     await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
-    await asyncio.sleep(RATE_LIMIT_DELAY)
-
-    # 포스트 이름 질문 추가
-    post_name_question = {"field": "포스트 이름", "prompt": "포스트 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "포스트 이름을 입력해주세요."}
-    while True:
-        await send_message_with_retry(channel, f"{user.mention} {post_name_question['prompt']}")
-        try:
-            response = await bot.wait_for(
-                "message",
-                check=lambda m: m.author == user and m.channel == channel,
-                timeout=300.0
-            )
-            post_name = response.content.strip()
-            if post_name_question["validator"](post_name):
-                answers[post_name_question["field"]] = post_name
-                break
-            else:
-                await send_message_with_retry(channel, post_name_question["error_message"])
-        except asyncio.TimeoutError:
-            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-            return
-        except discord.HTTPException as e:
-            await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
-            return
 
     for question in questions:
         if question.get("condition") and not question["condition"](answers):
@@ -543,12 +518,14 @@ async def character_apply(interaction: discord.Interaction):
                                     while True:
                                         field = f"{tech_question['field']}_{tech_counter}"
                                         await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                        def check(m):
+                                            return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                                         response = await bot.wait_for(
                                             "message",
-                                            check=lambda m: m.author == user and m.channel == channel,
+                                            check=check,
                                             timeout=300.0
                                         )
-                                        tech_answer = response.content.strip()
+                                        tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                                         if tech_question["validator"](tech_answer):
                                             answers[field] = tech_answer
                                             break
@@ -569,13 +546,15 @@ async def character_apply(interaction: discord.Interaction):
         else:
             while True:
                 await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                def check(m):
+                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
                     response = await bot.wait_for(
                         "message",
-                        check=lambda m: m.author == user and m.channel == channel,
+                        check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip()
+                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                     if question["validator"](answer):
                         answers[question["field"]] = answer
                         break
@@ -603,13 +582,15 @@ async def character_apply(interaction: discord.Interaction):
             question = next(q for q in questions if q["field"] == field)
             while True:
                 await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                def check(m):
+                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
                     response = await bot.wait_for(
                         "message",
-                        check=lambda m: m.author == user and m.channel == channel,
+                        check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip()
+                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                     if question["validator"](answer):
                         answers[field] = answer
                         break
@@ -631,7 +612,7 @@ async def character_apply(interaction: discord.Interaction):
     character_id = str(uuid.uuid4())
     await queue_flex_task(character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
     await save_result(character_id, description, False, "심사 중", None, str(user.id), answers.get("이름"), answers.get("종족"), answers.get("나이"), answers.get("성별"), None, answers.get("포스트 이름"))
-    await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊")
+    await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
 
 # 캐릭터 수정 명령어
 @bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 포스트 이름을 입력해줘~")
@@ -657,6 +638,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         await interaction.response.send_message(f"{user.mention} ❌ 캐릭터 정보를 불러올 수 없어! 다시 시도해~ 🥹", ephemeral=True)
         return
 
+    answers["포스트 이름"] = post_name
     await interaction.response.send_message(f"✅ '{post_name}' 수정 시작! 수정할 항목 번호를 쉼표로 구분해 입력해줘~", ephemeral=True)
     fields_list = "\n".join([f"{i+1}. {field}" for i, field in enumerate(EDITABLE_FIELDS)])
     await send_message_with_retry(channel, f"{user.mention} 수정할 항목 번호를 쉼표로 구분해 입력해줘 (예: 1,3,5). 기술/마법/요력 수정은 16번 선택!\n{fields_list}")
@@ -682,13 +664,15 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
         while True:
             await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
+            def check(m):
+                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
             try:
                 response = await bot.wait_for(
                     "message",
-                    check=lambda m: m.author == user and m.channel == channel,
+                    check=check,
                     timeout=300.0
                 )
-                answer = response.content.strip()
+                answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                 if question["validator"](answer):
                     answers[question["field"]] = answer
                     break
@@ -724,13 +708,15 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                             while True:
                                 field = f"{tech_question['field']}_{techs[idx][0].split('_')[1]}"
                                 await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                def check(m):
+                                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                                 try:
                                     response = await bot.wait_for(
                                         "message",
-                                        check=lambda m: m.author == user and m.channel == channel,
+                                        check=check,
                                         timeout=300.0
                                     )
-                                    tech_answer = response.content.strip()
+                                    tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                                     if tech_question["validator"](tech_answer):
                                         answers[field] = tech_answer
                                         break
@@ -746,13 +732,15 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         while True:
                             field = f"{tech_question['field']}_{tech_counter}"
                             await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                            def check(m):
+                                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                             try:
                                 response = await bot.wait_for(
                                     "message",
-                                    check=lambda m: m.author == user and m.channel == channel,
+                                    check=check,
                                     timeout=300.0
                                 )
-                                tech_answer = response.content.strip()
+                                tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                                 if tech_question["validator"](tech_answer):
                                     answers[field] = tech_answer
                                     break
@@ -797,13 +785,15 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             question = next(q for q in questions if q["field"] == field)
             while True:
                 await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                def check(m):
+                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
                     response = await bot.wait_for(
                         "message",
-                        check=lambda m: m.author == user and m.channel == channel,
+                        check=check,
                         timeout=300.0
                     )
-                    answer = response.content.strip()
+                    answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                     if question["validator"](answer):
                         answers[field] = answer
                         break
@@ -823,7 +813,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         description=description
     )
     await queue_flex_task(character_id, description, str(user.id), str(channel.id), thread_id, "character_check", prompt)
-    await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊")
+    await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
 
 @bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
 async def character_list(interaction: discord.Interaction):
@@ -834,7 +824,7 @@ async def character_list(interaction: discord.Interaction):
     if not characters:
         await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
         return
-    char_list = "\n".join([f"- {c[0]} (종족: {c[1]}, 나이: {c[2]}, 성별: {c[3]}, 포스트: {c[4]})" for c in characters])
+    char_list = "\n".join([f"- {c[0]} (포스트: {c[4]})" for c in characters])
     await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
 
 @bot.event
