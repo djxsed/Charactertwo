@@ -684,14 +684,14 @@ async def character_edit(interaction: discord.Interaction):
         return
 
     @bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
-async def character_list(interaction: discord.Interaction):
-    user = interaction.user
-    characters = await find_characters_by_name("", str(user.id))
-    if not characters:
-        await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
-        return
-    char_list = "\n".join([f"- {c[1]} (종족: {c[2]}, 나이: {c[3]}, 성별: {c[4]})" for c in characters])
-    await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
+    async def character_list(interaction: discord.Interaction):
+        user = interaction.user
+        characters = await find_characters_by_name("", str(user.id))
+        if not characters:
+            await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭터_신청으로 등록해줘~ 🥺", ephemeral=True)
+            return
+        char_list = "\n".join([f"- {c[1]} (종족: {c[2]}, 나이: {c[3]}, 성별: {c[4]})" for c in characters])
+        await interaction.response.send_message(f"**너의 캐릭터 목록**:\n{char_list}", ephemeral=True)
 
     # 일반 항목 수정
     for index in selected_indices:
