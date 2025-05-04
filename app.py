@@ -479,7 +479,23 @@ async def process_flex_queue():
             task_id = flex_queue.popleft()
             for attempt in range(DB_MAX_RETRIES):
                 try:
-                    :flutter
+               
+                    flex_data = await database.get_flex_data(task_id)
+                    if flex_data:
+                     
+                        logger.info(f"Flex 작업 처리 성공: task_id={task_id}, 데이터={flex_data}")
+                        break 
+                    else:
+                        logger.warning(f"Flex 데이터 없음: task_id={task_id}, 재시도 횟수={attempt + 1}")
+                except Exception as e:
+                    logger.error(f"Flex 작업 처리 중 에러: task_id={task_id}, 에러={e}, 재시도 횟수={attempt + 1}")
+                    if attempt < DB_MAX_RETRIES - 1:
+                        await asyncio.sleep(DB_RETRY_DELAY) 
+                    else:
+                        logger.error(f"Flex 작업 처리 실패 (최대 재시도 횟수 초과): task_id={task_id}")
+            else:
+                logger.error(f"Flex 작업 실패: task_id={task_id}, 최대 재시도 횟수({DB_MAX_RETRIES}) 초과")
+        await asyncio.sleep(FLEX_PROCESS_INTERVAL) 
                     
 System message continued from previous context:
 
