@@ -185,7 +185,7 @@ questions = [
     {"field": "사용 기술/마법/요력 쿨타임", "prompt": "사용 기술/마법/요력의 쿨타임을 입력해주세요. (예: 30초, 최소 위력 4는 15초, 위력 5는 20초, 위력 6은 40초로 해주세요.)", "validator": lambda x: len(x) > 0, "error_message": "쿨타임을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할퀴기나 주먹같은 단발 공격은 1로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까? (예/아니요)", "validator": lambda x: x in ["예", "아니요"], "error_message": "예 또는 아니요로 입력해주세요."},
+    {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까?", "options": ["예", "아니요"], "error_message": "예 또는 아니요로 선택해주세요."},
     {"field": "과거사", "prompt": "과거사를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
     {"field": "특징", "prompt": "특징을 설명해주세요. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "특징 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."},
     {"field": "관계", "prompt": "관계를 설명해주세요. (없으면 '없음' 입력)", "validator": lambda x: True, "error_message": ""},
@@ -592,10 +592,13 @@ class SelectionView(discord.ui.View):
             if interaction.user != self.user:
                 await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
                 return
-            await interaction.response.defer()
+            await interaction.response.send_message(f"{option}을(를) 선택했어!", ephemeral=True)
             await self.callback(option)
             self.stop()
         return button_callback
+
+    async def on_timeout(self):
+        await self.message.channel.send(f"{self.user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
 
 # 캐릭터 신청 명령어
 answers = {}
@@ -624,63 +627,56 @@ async def character_apply(interaction: discord.Interaction):
             continue
         if question.get("options"):
             view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-            await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+            message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+            view.message = message  # on_timeout에서 사용
             await view.wait()
             if question["field"] not in answers:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                 return
         elif question.get("field") == "사용 기술/마법/요력 추가 여부":
             if tech_counter >= 6:
                 continue
             while True:
-                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
-                try:
-                    response = await bot.wait_for(
-                        "message",
-                        check=lambda m: m.author == user and m.channel == channel,
-                        timeout=600.0
-                    )
-                    answer = response.content.strip()
-                    if question["validator"](answer):
-                        if answer == "예":
-                            for tech_question in questions:
-                                if tech_question.get("is_tech"):
-                                    while True:
-                                        field = f"{tech_question['field']}_{tech_counter}"
-                                        if tech_question.get("options"):
-                                            view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
-                                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
-                                            await view.wait()
-                                            if field not in answers:
-                                                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-                                                return
+                view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
+                message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                view.message = message
+                await view.wait()
+                if question["field"] not in answers:
+                    return
+                if answers[question["field"]] == "예":
+                    for tech_question in questions:
+                        if tech_question.get("is_tech"):
+                            while True:
+                                field = f"{tech_question['field']}_{tech_counter}"
+                                if tech_question.get("options"):
+                                    view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
+                                    message = await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                    view.message = message
+                                    await view.wait()
+                                    if field not in answers:
+                                        return
+                                else:
+                                    await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                    def check(m):
+                                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                                    try:
+                                        response = await bot.wait_for(
+                                            "message",
+                                            check=check,
+                                            timeout=600.0
+                                        )
+                                        tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                                        if tech_question["validator"](tech_answer):
+                                            answers[field] = tech_answer
+                                            break
                                         else:
-                                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
-                                            def check(m):
-                                                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                                            response = await bot.wait_for(
-                                                "message",
-                                                check=check,
-                                                timeout=600.0
-                                            )
-                                            tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
-                                            if tech_question["validator"](tech_answer):
-                                                answers[field] = tech_answer
-                                                break
-                                            else:
-                                                await send_message_with_retry(channel, tech_question["error_message"])
-                            tech_counter += 1
-                            if tech_counter < 6:
-                                continue
-                        break
-                    else:
-                        await send_message_with_retry(channel, question["error_message"])
-                except asyncio.TimeoutError:
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-                    return
-                except discord.HTTPException as e:
-                    await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
-                    return
+                                            await send_message_with_retry(channel, tech_question["error_message"])
+                                    except asyncio.TimeoutError:
+                                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                                        return
+                    tech_counter += 1
+                    if tech_counter < 6:
+                        continue
+                break
         else:
             while True:
                 await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
@@ -724,10 +720,10 @@ async def character_apply(interaction: discord.Interaction):
             while True:
                 if question.get("options"):
                     view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    view.message = message
                     await view.wait()
                     if question["field"] not in answers:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
                 else:
                     await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
@@ -821,10 +817,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         while True:
             if question.get("options"):
                 view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                view.message = message
                 await view.wait()
                 if question["field"] not in answers:
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
                 break
             else:
@@ -877,10 +873,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                 field = f"{tech_question['field']}_{techs[idx][0].split('_')[1]}"
                                 if tech_question.get("options"):
                                     view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
-                                    await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                    message = await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                    view.message = message
                                     await view.wait()
                                     if field not in answers:
-                                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                                         return
                                 else:
                                     await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
@@ -909,10 +905,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                             field = f"{tech_question['field']}_{tech_counter}"
                             if tech_question.get("options"):
                                 view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
-                                await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                message = await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                view.message = message
                                 await view.wait()
                                 if field not in answers:
-                                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                                     return
                             else:
                                 await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
@@ -972,10 +968,10 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             while True:
                 if question.get("options"):
                     view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    view.message = message
                     await view.wait()
                     if question["field"] not in answers:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
                 else:
                     await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
