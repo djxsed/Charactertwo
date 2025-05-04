@@ -319,6 +319,7 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
 
 # 429 에러 재시도 로직 (이미지 다운로드 및 첨부 개선)
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None):
+    files = files or []  # None일 경우 빈 리스트로 설정
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
@@ -687,42 +688,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
 
-    # 일반 항목 수정
-    for index in selected_indices:
-        if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
-            continue
-        question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
-        while True:
-            await send_message_with_retry(channel, f"{user.mention} ✏️ '{question['label']}'의 새로운 내용을 입력해줘~")
-            try:
-                new_answer = await bot.wait_for(
-                    "message",
-                    check=lambda m: m.author == user and m.channel == channel,
-                    timeout=300.0
-                )
-                answers[question["field"]] = new_answer.content
-                await send_message_with_retry(channel, f"✅ '{question['label']}'이(가) '{new_answer.content}'으로 수정됐어!")
-                break
-            except asyncio.TimeoutError:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 시간이 초과됐어! '{question['label']}' 수정을 다시 시도해줘~ 🥹")
-                return
-
-    # 기술/마법/요력 수정
-    if 15 in selected_indices:  # EDITABLE_FIELDS의 16번째 항목 (인덱스 15)
-        await handle_tech_edit(interaction, selected_char, answers)
-        return
-
-    # 수정 완료 및 DB 업데이트
-    await update_character_info(character_id, answers)
-    await interaction.followup.send(f"{user.mention} ✨ '{post_name}' 캐릭터 정보 수정이 완료됐어! 스레드를 확인해줘~")
-
-    thread = bot.get_channel(int(thread_id))
-    if thread:
-        await update_thread_content(thread, answers)
-
-# 캐릭터 수정 명령어 (계속)
-async def character_edit(interaction: discord.Interaction, post_name: str):
-    # ... (이전 코드 계속)
     # 일반 항목 수정
     for index in selected_indices:
         if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
