@@ -12,7 +12,6 @@ import asyncio
 from collections import deque
 from flask import Flask
 import threading
-import time
 import aiohttp
 
 # Flask 웹 서버 설정
@@ -26,7 +25,7 @@ def home():
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/bot.db")  # Render에서 쓰기 가능한 경로
+DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/bot.db")
 
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -87,8 +86,6 @@ DEFAULT_PROMPT = """
 - 설정 참고해서 과거사 보기.
 - 만약 종족이 요괴인데 AML이면 안된다.(과거사나 특징에서 요괴 정체를 숨기고 있는 것이라면 통과).
 - 만약 기술/마법/요력이 장비 혹은 무기라면 지속 시간과 쿨타임이 양식을 어긋나도 통과.
-- 키/몸무게에 cm/kg 단위가 없어도 cm/kg으로 해석.(예:180/80,180cm/80kg)
-- 키/몸무게에 300m 이상의 키와 10000kg 이상의 몸무게는 안된다.
 
 **역할 판단**:
 1. 소속에 'AML' 포함 → AML.
@@ -390,9 +387,9 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
-# 429 에러 재시도 로직 (이미지 다운로드 및 첨부 개선)
+# 429 에러 재시도 로직
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
-    files = files or []  # None일 경우 빈 리스트로 설정
+    files = files or []
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
@@ -502,7 +499,6 @@ async def process_flex_queue():
                                         await member.add_roles(race_role)
                                         result += f" (종족 `{race}` 부여했어! 😊)"
 
-                                # 출력 양식
                                 formatted_description = (
                                     f"이름: {answers.get('이름', '미기재')}\n"
                                     f"성별: {answers.get('성별', '미기재')}\n"
@@ -595,43 +591,13 @@ class SelectionView(discord.ui.View):
                 await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
                 return
             await interaction.response.send_message(f"{option}을(를) 선택했어!", ephemeral=True)
-            await self.callback(option)
+            if self.callback is not None:  # None 체크 추가
+                await self.callback(option)
             self.stop()
         return button_callback
 
     async def on_timeout(self):
         await self.message.channel.send(f"{self.user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-
-# 질문 처리 헬퍼 함수
-async def ask_question(question, field, user, channel, answers):
-    if question.get("condition") and not question["condition"](answers):
-        return None
-    if question.get("options"):
-        view = SelectionView(question["options"], field, user, lambda option: answers.update({field: option}))
-        message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
-        view.message = message
-        await view.wait()
-        if field not in answers:
-            return None
-    else:
-        await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
-        def check(m):
-            return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-        try:
-            response = await bot.wait_for("message", check=check, timeout=600.0)
-            if question["field"] == "외모" and response.attachments:
-                answer = f"이미지_{response.attachments[0].url}"
-            else:
-                answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
-            if question["validator"](answer):
-                answers[field] = answer
-            else:
-                await send_message_with_retry(channel, question["error_message"])
-                return None
-        except asyncio.TimeoutError:
-            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
-            return None
-    return answers[field]
 
 # 캐릭터 신청 명령어
 @bot.tree.command(name="캐릭터_신청", description="캐릭터를 신청해! 순차적으로 질문에 답해줘~")
@@ -648,41 +614,83 @@ async def character_apply(interaction: discord.Interaction):
 
     await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
 
-    # 비기술 질문 (인덱스 0~15)
-    for question in questions[:16]:
-        while True:
-            result = await ask_question(question, question["field"], user, channel, answers)
-            if result is not None:
-                break
+    async def handle_selection(field, option):
+        nonlocal answers
+        answers[field] = option
 
-    # 기술 질문 처리
-    add_another = True
-    while tech_counter < 6 and add_another:
-        for tech_question in questions[16:21]:  # 인덱스 16~20: 기술 관련 질문
-            field = f"{tech_question['field']}_{tech_counter}"
+    for question in questions:
+        if question.get("condition") and not question["condition"](answers):
+            continue
+        if question.get("field") == "사용 기술/마법/요력 추가 여부" and tech_counter > 0:
+            if tech_counter >= 6:
+                continue
+            view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
+            message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+            view.message = message
+            await view.wait()
+            if question["field"] not in answers:
+                return
+            if answers[question["field"]] != "예":
+                continue
+        if question.get("is_tech") and ("사용 기술/마법/요력 추가 여부" not in answers or answers.get("사용 기술/마법/요력 추가 여부") == "예" or tech_counter == 0):
+            if tech_counter >= 6:
+                continue
             while True:
-                result = await ask_question(tech_question, field, user, channel, answers)
-                if result is not None:
+                field = f"{question['field']}_{tech_counter}"
+                if question.get("options"):
+                    view = SelectionView(question["options"], field, user, lambda option: handle_selection(field, option))
+                    message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    view.message = message
+                    await view.wait()
+                    if field not in answers:
+                        return
                     break
-        # 추가 여부 질문
-        async def callback(option):
-            nonlocal add_another
-            add_another = (option == "예")
-        view = SelectionView(["예", "아니요"], "add_another", user, callback)
-        message = await send_message_with_retry(channel, f"{user.mention} {questions[21]['prompt']}", view=view)
-        view.message = message
-        await view.wait()
-        if add_another:
-            tech_counter += 1
+                else:
+                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                    def check(m):
+                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    try:
+                        response = await bot.wait_for("message", check=check, timeout=600.0)
+                        tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                        if question["validator"](tech_answer):
+                            answers[field] = tech_answer
+                            break
+                        else:
+                            await send_message_with_retry(channel, question["error_message"])
+                    except asyncio.TimeoutError:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                        return
+            if question["field"] == "사용 기술/마법/요력 설명":
+                tech_counter += 1
+        elif question.get("field") != "사용 기술/마법/요력 추가 여부":
+            while True:
+                if question.get("options"):
+                    view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
+                    message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    view.message = message
+                    await view.wait()
+                    if question["field"] not in answers:
+                        return
+                    break
+                else:
+                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                    def check(m):
+                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    try:
+                        response = await bot.wait_for("message", check=check, timeout=600.0)
+                        if question["field"] == "외모" and response.attachments:
+                            answer = f"이미지_{response.attachments[0].url}"
+                        else:
+                            answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
+                        if question["validator"](answer):
+                            answers[question["field"]] = answer
+                            break
+                        else:
+                            await send_message_with_retry(channel, question["error_message"])
+                    except asyncio.TimeoutError:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                        return
 
-    # 나머지 질문 (인덱스 22~끝)
-    for question in questions[22:]:
-        while True:
-            result = await ask_question(question, question["field"], user, channel, answers)
-            if result is not None:
-                break
-
-    # 답변 검증
     while True:
         errors = validate_all(answers)
         if not errors:
@@ -697,11 +705,32 @@ async def character_apply(interaction: discord.Interaction):
         for field in fields_to_correct:
             question = next(q for q in questions if q["field"] == field)
             while True:
-                result = await ask_question(question, field, user, channel, answers)
-                if result is not None:
-                    break
+                if question.get("options"):
+                    view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
+                    message = await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    view.message = message
+                    await view.wait()
+                    if question["field"] not in answers:
+                        return
+                else:
+                    await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                    def check(m):
+                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    try:
+                        response = await bot.wait_for("message", check=check, timeout=600.0)
+                        if field == "외모" and response.attachments:
+                            answer = f"이미지_{response.attachments[0].url}"
+                        else:
+                            answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
+                        if question["validator"](answer):
+                            answers[field] = answer
+                            break
+                        else:
+                            await send_message_with_retry(channel, question["error_message"])
+                    except asyncio.TimeoutError:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                        return
 
-    # AI 심사 준비
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
@@ -761,7 +790,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
     async def handle_selection(field, option):
         answers[field] = option
 
-    # 일반 항목 수정
     for index in selected_indices:
         if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
             continue
@@ -798,7 +826,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
 
-    # 기술/마법/요력 수정
     if any("사용 기술/마법/요력" in EDITABLE_FIELDS[i] for i in selected_indices):
         techs = [(k, answers[k], answers.get(f"사용 기술/마법/요력 위력_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 쿨타임_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 지속시간_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 설명_{k.split('_')[1]}"))
                  for k in sorted([k for k in answers if k.startswith("사용 기술/마법/요력_")], key=lambda x: int(x.split('_')[1]))]
@@ -948,7 +975,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
 
-    # AI 심사에서 외모 필드 제외
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
@@ -987,12 +1013,9 @@ async def on_ready():
 
 # Flask와 디스코드 봇 실행
 if __name__ == "__main__":
-    # Flask 서버를 별도 스레드에서 실행
     flask_thread = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000))),
         daemon=True
     )
     flask_thread.start()
-
-    # 디스코드 봇 실행
     bot.run(DISCORD_TOKEN)
