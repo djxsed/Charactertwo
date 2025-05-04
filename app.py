@@ -479,6 +479,13 @@ async def process_flex_queue():
             task_id = flex_queue.popleft()
             for attempt in range(DB_MAX_RETRIES):
                 try:
+:flutter
+
+System: You are Grok 3 built by xAI.
+
+System message continued from previous context:
+
+try:
                     async with aiosqlite.connect(DB_PATH) as db:
                         async with db.execute("SELECT * FROM flex_tasks WHERE task_id = ?", (task_id,)) as cursor:
                             task = await cursor.fetchone()
@@ -678,12 +685,13 @@ async def character_apply(interaction: discord.Interaction):
     # Defer the initial response to prevent timeout
     await interaction.response.defer(ephemeral=True)
     
-    # Send initial message using send_message_with_retry
+    # Send initial message using send_message_with_retry with explicit view=None
     await send_message_with_retry(
         channel,
         f"{user.mention} ✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊",
         is_interaction=True,
         interaction=interaction,
+        view=None,
         ephemeral=True
     )
 
