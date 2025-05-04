@@ -75,9 +75,15 @@ DEFAULT_PROMPT = """
 - 소속: A.M.L, 하람고, 하람고등학교만 허용.
 - 속성 합산(체력, 지능, 이동속도, 힘, 냉철): 인간 5~18, 마법사 5~19, 요괴 5~20.
 - 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
+校园及班级格式仅限 'x-y班'、'x年级 y班'、'x/y班'。
 - 기술/마법/요력 위력은 1~6만 허용.
 - 기술/마법/요력은 시간, 범위, 위력 등이 명확해야 함.
 - 기술/마법/요력 개수는 6개 이하.
+- 기술/마법/요력의 위력이 4이면 쿨타임이 15 이상이어야 함.
+- 기술/마법/요력의 위력이 5이면 쿨타임이 20 이상이어야 함.
+- 기술/마법/요력의 위력이 6이면 쿨타임이 40 이상이어야 함.
+- 지속 시간은 40을 초고하면 안됌.
+- 기술/마법/요력의 쿨타임과 지속시간의 단위가 '지문'이라면 초로 해석.
 
 **역할 판단**:
 1. 소속에 'AML' 포함 → AML.
@@ -95,7 +101,7 @@ DEFAULT_PROMPT = """
 
 # 질문 목록
 questions = [
-    {"field": "포스트 이름", "prompt": "포스트 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "포스트 이름을 입력해주세요."},
+    {"field": "포스트 이름", "prompt": "포스트 이름을 입력해주세요.(향후 수정 명령어 시 이 질문에 작성한 이름을 작성해야합니다!)", "validator": lambda x: len(x) > 0, "error_message": "포스트 이름을 입력해주세요."},
     {"field": "종족", "prompt": "종족을 선택해주세요.", "options": ["인간", "마법사", "요괴"], "error_message": "허용되지 않은 종족입니다. 인간, 마법사, 요괴 중에서 선택해주세요."},
     {"field": "이름", "prompt": "캐릭터의 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "이름을 입력해주세요."},
     {"field": "성별", "prompt": "성별을 선택해주세요.", "options": ["남", "여", "불명"], "error_message": "허용되지 않은 성별입니다. 남, 여, 불명 중에서 선택해주세요."},
@@ -106,13 +112,15 @@ questions = [
     {"field": "소속", "prompt": "소속을 선택해주세요.", "options": ["학생", "선생님", "A.M.L"], "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."},
     {"field": "학년 및 반", "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)", "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x), "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.", "condition": lambda answers: answers.get("소속") == "학생"},
     {"field": "담당 과목 및 학년, 반", "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)", "validator": lambda x: len(x) > 0, "error_message": "담당 과목과 학년, 반을 입력해주세요.", "condition": lambda answers: answers.get("소속") == "선생님"},
-    {"field": "체력", "prompt": "체력 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "체력은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "지능", "prompt": "지능 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "지능은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "이동속도", "prompt": "이동속도 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "이동속도는 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "힘", "prompt": "힘 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "힘은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "냉철", "prompt": "냉철 수치를 입력해주세요. (1~4)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 4, "error_message": "냉철은 1에서 4 사이의 숫자여야 합니다."},
+    {"field": "체력", "prompt": "체력 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "체력은 1에서 6 사이의 숫자여야 합니다."},
+    {"field": "지능", "prompt": "지능 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "지능은 1에서 6 사이의 숫자여야 합니다."},
+    {"field": "이동속도", "prompt": "이동속도 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "이동속도는 1에서 6 사이의 숫자여야 합니다."},
+    {"field": "힘", "prompt": "힘 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "힘은 1에서 6 사이의 숫자여야 합니다."},
+    {"field": "냉철", "prompt": "냉철 수치를 선택해주세요.", "options": ["1", "2", "3", "4"], "error_message": "냉철은 1에서 4 사이의 숫자여야 합니다."},
     {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 쿨타임", "prompt": "사용 기술/마법/요력의 쿨타임을 입력해주세요. (예: 30초, 최소 위력 4는 15초, 위력 5는 20초, 위력 6은 40초로 해주세요.)", "validator": lambda x: len(x) > 0, "error_message": "쿨타임을 입력해주세요.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할퀴기나 주먹같은 단발 공격은 1로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까? (예/아니요)", "validator": lambda x: x in ["예", "아니요"], "error_message": "예 또는 아니요로 입력해주세요."},
     {"field": "과거사", "prompt": "과거사를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
@@ -457,8 +465,10 @@ async def process_flex_queue():
                                     tech_name = answers.get(f"사용 기술/마법/요력_{i}")
                                     if tech_name:
                                         tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
+                                        tech_cooldown = answers.get(f"사용 기술/마법/요력 쿨타임_{i}", "미기재")
+                                        tech_duration = answers.get(f"사용 기술/마법/요력 지속시간_{i}", "미기재")
                                         tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
-                                        techs.append(f"<{tech_name}> (위력: {tech_power})\n설명: {tech_desc}")
+                                        techs.append(f"<{tech_name}> (위력: {tech_power}, 쿨타임: {tech_cooldown}, 지속시간: {tech_duration})\n설명: {tech_desc}")
                                 formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력: 없음\n"
                                 formatted_description += "\n"
                                 formatted_description += (
@@ -574,20 +584,28 @@ async def character_apply(interaction: discord.Interaction):
                                 if tech_question.get("is_tech"):
                                     while True:
                                         field = f"{tech_question['field']}_{tech_counter}"
-                                        await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
-                                        def check(m):
-                                            return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                                        response = await bot.wait_for(
-                                            "message",
-                                            check=check,
-                                            timeout=300.0
-                                        )
-                                        tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
-                                        if tech_question["validator"](tech_answer):
-                                            answers[field] = tech_answer
-                                            break
+                                        if tech_question.get("options"):
+                                            view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
+                                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                            await view.wait()
+                                            if field not in answers:
+                                                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                                                return
                                         else:
-                                            await send_message_with_retry(channel, tech_question["error_message"])
+                                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                            def check(m):
+                                                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                                            response = await bot.wait_for(
+                                                "message",
+                                                check=check,
+                                                timeout=300.0
+                                            )
+                                            tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
+                                            if tech_question["validator"](tech_answer):
+                                                answers[field] = tech_answer
+                                                break
+                                            else:
+                                                await send_message_with_retry(channel, tech_question["error_message"])
                             tech_counter += 1
                             if tech_counter < 6:
                                 continue
@@ -771,9 +789,9 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
 
     # 기술/마법/요력 수정
     if any("사용 기술/마법/요력" in EDITABLE_FIELDS[i] for i in selected_indices):
-        techs = [(k, answers[k], answers.get(f"사용 기술/마법/요력 위력_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 설명_{k.split('_')[1]}"))
+        techs = [(k, answers[k], answers.get(f"사용 기술/마법/요력 위력_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 쿨타임_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 지속시간_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 설명_{k.split('_')[1]}"))
                  for k in sorted([k for k in answers if k.startswith("사용 기술/마법/요력_")], key=lambda x: int(x.split('_')[1]))]
-        tech_list = "\n".join([f"{i+1}. {t[1]} (위력: {t[2]}, 설명: {t[3]})" for i, t in enumerate(techs)]) if techs else "없음"
+        tech_list = "\n".join([f"{i+1}. {t[1]} (위력: {t[2]}, 쿨타임: {t[3]}, 지속시간: {t[4]}, 설명: {t[5]})" for i, t in enumerate(techs)]) if techs else "없음"
         await send_message_with_retry(channel, f"{user.mention} 현재 기술/마법/요력:\n{tech_list}\n수정하려면 번호, 추가하려면 'a', 삭제하려면 'd'로 입력 (예: 1,a,d)")
         try:
             response = await bot.wait_for(
@@ -794,6 +812,46 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         if tech_question.get("is_tech"):
                             while True:
                                 field = f"{tech_question['field']}_{techs[idx][0].split('_')[1]}"
+                                if tech_question.get("options"):
+                                    view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
+                                    await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                    await view.wait()
+                                    if field not in answers:
+                                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                                        return
+                                else:
+                                    await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
+                                    def check(m):
+                                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                                    try:
+                                        response = await bot.wait_for(
+                                            "message",
+                                            check=check,
+                                            timeout=300.0
+                                        )
+                                        tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
+                                        if tech_question["validator"](tech_answer):
+                                            answers[field] = tech_answer
+                                            break
+                                        else:
+                                            await send_message_with_retry(channel, tech_question["error_message"])
+                                    except asyncio.TimeoutError:
+                                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                                        return
+            elif action == "a" and len(techs) < 6:
+                tech_counter = len(techs)
+                for tech_question in questions:
+                    if tech_question.get("is_tech"):
+                        while True:
+                            field = f"{tech_question['field']}_{tech_counter}"
+                            if tech_question.get("options"):
+                                view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
+                                await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                await view.wait()
+                                if field not in answers:
+                                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                                    return
+                            else:
                                 await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
                                 def check(m):
                                     return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
@@ -812,30 +870,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                 except asyncio.TimeoutError:
                                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                                     return
-            elif action == "a" and len(techs) < 6:
-                tech_counter = len(techs)
-                for tech_question in questions:
-                    if tech_question.get("is_tech"):
-                        while True:
-                            field = f"{tech_question['field']}_{tech_counter}"
-                            await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}")
-                            def check(m):
-                                return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
-                            try:
-                                response = await bot.wait_for(
-                                    "message",
-                                    check=check,
-                                    timeout=300.0
-                                )
-                                tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
-                                if tech_question["validator"](tech_answer):
-                                    answers[field] = tech_answer
-                                    break
-                                else:
-                                    await send_message_with_retry(channel, tech_question["error_message"])
-                            except asyncio.TimeoutError:
-                                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                                return
                 tech_counter += 1
             elif action == "d" and techs:
                 await send_message_with_retry(channel, f"{user.mention} 삭제할 기술 번호를 입력해줘 (1-{len(techs)})")
@@ -850,6 +884,8 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         key = techs[idx][0]
                         del answers[key]
                         del answers[f"사용 기술/마법/요력 위력_{key.split('_')[1]}"]
+                        del answers[f"사용 기술/마법/요력 쿨타임_{key.split('_')[1]}"]
+                        del answers[f"사용 기술/마법/요력 지속시간_{key.split('_')[1]}"]
                         del answers[f"사용 기술/마법/요력 설명_{key.split('_')[1]}"]
                     else:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 유효한 번호를 입력해줘! 다시 시도해~ 🥹")
@@ -878,7 +914,6 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     if question["field"] not in answers:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
-                    break
                 else:
                     await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
                     def check(m):
