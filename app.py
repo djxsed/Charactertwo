@@ -450,15 +450,16 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
-                logger.warning(f"429 에러 발생, 재시도 {attempt + 1}/{max_retries}, 대기 시간: {retry_after}초")
-                await asyncio.sleep(retry_after + RATE_LIMIT_DELAY)
+                # Increase wait time slightly for each retry to avoid hitting rate limits repeatedly
+                adjusted_retry = retry_after + (RATE_LIMIT_DELAY * (attempt + 1))
+                logger.warning(f"429 에러 발생, 재시도 {attempt + 1}/{max_retries}, 대기 시간: {adjusted_retry}초, content={content[:50]}...")
+                await asyncio.sleep(adjusted_retry)
             else:
-                logger.error(f"HTTP 오류 발생: status={e.status}, message={e.text}")
+                logger.error(f"HTTP 오류 발생: status={e.status}, message={e.text}, content={content[:50]}...")
                 raise e
         except TypeError as e:
             if "view" in str(e).lower():
-                logger.warning(f"TypeError in view parameter, retrying without view: {e}")
-                # Retry without view
+                logger.warning(f"TypeError in view parameter, retrying without view: {e}, content={content[:50]}...")
                 try:
                     await rate_limit_api_call()
                     if is_interaction and interaction:
@@ -481,16 +482,16 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                         logger.info(f"Message sent without view: content={content[:50]}...")
                         return None, None
                 except Exception as inner_e:
-                    logger.error(f"Retry without view failed: {inner_e}")
+                    logger.error(f"Retry without view failed: {inner_e}, content={content[:50]}...")
                     raise inner_e
             else:
-                logger.error(f"Unexpected TypeError: {e}")
+                logger.error(f"Unexpected TypeError: {e}, content={content[:50]}...")
                 raise e
         except Exception as e:
-            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}")
+            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}, content={content[:50]}...")
             raise e
     logger.error(f"최대 재시도 횟수 초과: content={content[:50]}...")
-    raise discord.HTTPException(response=None, message="최대 재시도 횟수 초과")
+    raise Exception("최대 재시도 횟수 초과")
 
 # 이미지 다운로드 함수
 async def download_image(image_url):
@@ -750,7 +751,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     logger.warning(f"캐릭터 신청 타임아웃: user_id={user.id}, field={question['field']}")
                     return
-            except discord.HTTPException as e:
+            except Exception as e:
                 await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                 logger.error(f"버튼 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                 return
@@ -796,7 +797,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     logger.warning(f"캐릭터 신청 타임아웃: user_id={user.id}, field={question['field']}")
                     return
-                except discord.HTTPException as e:
+                except Exception as e:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     logger.error(f"기술 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                     return
@@ -824,7 +825,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     logger.warning(f"캐릭터 신청 타임아웃: user_id={user.id}, field={question['field']}")
                     return
-                except discord.HTTPException as e:
+                except Exception as e:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     logger.error(f"일반 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                     return
@@ -836,7 +837,7 @@ async def character_apply(interaction: discord.Interaction):
         fields_to_correct = set()
         error_msg = "다음 문제들이 있어:\n"
         for fields, message in errors:
-            error_msg += f"- {message}\n"
+            error_msg += f"- {message17": message}\n"
             fields_to_correct.update(fields)
         await send_message_with_retry(channel, f"{user.mention} {error_msg}다시 입력해줘~")
 
@@ -849,11 +850,11 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
                         await view.wait()
                         if question["field"] not in answers:
-                            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                            logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
+                            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                            logger.warning(f"캐릭터 신청 타임아웃: user_id={user.id}, field={question['field']}")
                             return
                         break
-                    except discord.HTTPException as e:
+                    except Exception as e:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         logger.error(f"수정 버튼 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                         return
@@ -877,12 +878,12 @@ async def character_apply(interaction: discord.Interaction):
                         else:
                             await send_message_with_retry(channel, question["error_message"])
                     except asyncio.TimeoutError:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                        logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                        logger.warning(f"캐릭터 신청 타임아웃: user_id={user.id}, field={question['field']}")
                         return
-                    except discord.HTTPException as e:
+                    except Exception as e:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
-                        logger.error(f"수정 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
+                        logger.error(f"일반 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                         return
 
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
@@ -998,7 +999,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
                         return
                     break
-                except discord.HTTPException as e:
+                except Exception as e:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     logger.error(f"수정 버튼 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                     return
@@ -1025,7 +1026,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
                     return
-                except discord.HTTPException as e:
+                except Exception as e:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     logger.error(f"수정 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                     return
@@ -1075,7 +1076,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                                     logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={tech_question['field']}")
                                     return
-                                except discord.HTTPException as e:
+                                except Exception as e:
                                     await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                                     logger.error(f"기술 수정 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                                     return
@@ -1103,7 +1104,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                 await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                                 logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={tech_question['field']}")
                                 return
-                            except discord.HTTPException as e:
+                            except Exception as e:
                                 await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                                 logger.error(f"기술 추가 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                                 return
@@ -1155,7 +1156,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                             logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
                             return
                         break
-                    except discord.HTTPException as e:
+                    except Exception as e:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         logger.error(f"수정 버튼 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                         return
@@ -1182,7 +1183,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         logger.warning(f"캐릭터 수정 타임아웃: user_id={user.id}, field={question['field']}")
                         return
-                    except discord.HTTPException as e:
+                    except Exception as e:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         logger.error(f"수정 입력 메시지 전송 중 에러: user_id={user.id}, 에러: {e}")
                         return
