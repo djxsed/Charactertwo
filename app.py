@@ -26,7 +26,7 @@ def home():
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DB_PATH = ":memory:"  # 메모리 사용으로 변경
+DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/bot.db")  # Render에서 쓰기 가능한 경로
 
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -126,63 +126,67 @@ EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술
 # Flex 작업 큐
 flex_queue = deque()
 
-# 데이터베이스 초기화 (메모리 사용)
+# 데이터베이스 초기화
 async def init_db():
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS results (
-                character_id TEXT PRIMARY KEY,
-                description_hash TEXT,
-                pass BOOLEAN,
-                reason TEXT,
-                role_name TEXT,
-                user_id TEXT,
-                character_name TEXT,
-                race TEXT,
-                age TEXT,
-                gender TEXT,
-                thread_id TEXT,
-                description TEXT,
-                timestamp TEXT,
-                post_name TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS cooldowns (
-                user_id TEXT PRIMARY KEY,
-                last_request TEXT,
-                request_count INTEGER,
-                reset_date TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS flex_tasks (
-                task_id TEXT PRIMARY KEY,
-                character_id TEXT,
-                description TEXT,
-                user_id TEXT,
-                channel_id TEXT,
-                thread_id TEXT,
-                type TEXT,
-                prompt TEXT,
-                status TEXT,
-                created_at TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS prompts (
-                guild_id TEXT PRIMARY KEY,
-                prompt_content TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                guild_id TEXT PRIMARY KEY,
-                allowed_roles TEXT,
-                check_channel_name TEXT
-            )
-        """)
-        await db.commit()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS results (
+                    character_id TEXT PRIMARY KEY,
+                    description_hash TEXT,
+                    pass BOOLEAN,
+                    reason TEXT,
+                    role_name TEXT,
+                    user_id TEXT,
+                    character_name TEXT,
+                    race TEXT,
+                    age TEXT,
+                    gender TEXT,
+                    thread_id TEXT,
+                    description TEXT,
+                    timestamp TEXT,
+                    post_name TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cooldowns (
+                    user_id TEXT PRIMARY KEY,
+                    last_request TEXT,
+                    request_count INTEGER,
+                    reset_date TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS flex_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    character_id TEXT,
+                    description TEXT,
+                    user_id TEXT,
+                    channel_id TEXT,
+                    thread_id TEXT,
+                    type TEXT,
+                    prompt TEXT,
+                    status TEXT,
+                    created_at TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS prompts (
+                    guild_id TEXT PRIMARY KEY,
+                    prompt_content TEXT
+                )
+            """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    guild_id TEXT PRIMARY KEY,
+                    allowed_roles TEXT,
+                    check_channel_name TEXT
+                )
+            """)
+            await db.commit()
+            print("데이터베이스 테이블 생성 완료!")
+    except Exception as e:
+        print(f"데이터베이스 초기화 중 에러: {e}")
 
 # 서버별 설정 조회
 async def get_settings(guild_id):
@@ -689,6 +693,17 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             continue
         question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
         while True:
+            await send_message_with_retry(channel, f"{userSCRIBE
+
+# 캐릭터 수정 명령어 (계속)
+async def character_edit(interaction: discord.Interaction, post_name: str):
+    # ... (이전 코드 계속)
+    # 일반 항목 수정
+    for index in selected_indices:
+        if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
+            continue
+        question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
+        while True:
             await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
             def check(m):
                 return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
@@ -864,10 +879,13 @@ async def character_list(interaction: discord.Interaction):
 # 봇 시작 시 실행
 @bot.event
 async def on_ready():
-    await init_db()
-    print(f'봇이 로그인했어: {bot.user}')
-    await bot.tree.sync()
-    bot.loop.create_task(process_flex_queue())
+    try:
+        await init_db()
+        print(f'봇이 로그인했어: {bot.user}')
+        await bot.tree.sync()
+        bot.loop.create_task(process_flex_queue())
+    except Exception as e:
+        print(f"봇 시작 중 에러 발생: {e}")
 
 # Flask와 디스코드 봇 실행
 if __name__ == "__main__":
