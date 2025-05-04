@@ -26,7 +26,7 @@ def home():
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DB_PATH = os.getenv("DB_PATH", "/data/characters.db")  # Render Persistent Disk 사용
+DB_PATH = ":memory:"  # 메모리 사용으로 변경
 
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -126,10 +126,8 @@ EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술
 # Flex 작업 큐
 flex_queue = deque()
 
-# 데이터베이스 초기화 (Persistent Disk 사용)
+# 데이터베이스 초기화 (메모리 사용)
 async def init_db():
-    if not os.path.exists(os.path.dirname(DB_PATH)):
-        os.makedirs(os.path.dirname(DB_PATH))
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS results (
@@ -873,5 +871,12 @@ async def on_ready():
 
 # Flask와 디스코드 봇 실행
 if __name__ == "__main__":
-    threading.Thread(target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))).start()
+    # Flask 서버를 별도 스레드에서 실행
+    flask_thread = threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000))),
+        daemon=True
+    )
+    flask_thread.start()
+
+    # 디스코드 봇 실행
     bot.run(DISCORD_TOKEN)
