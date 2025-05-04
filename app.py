@@ -15,7 +15,6 @@ import threading
 import time
 import aiohttp
 import logging
-import aiohttp
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -51,7 +50,7 @@ REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
-RATE_LIMIT_DELAY = 1.5  # 기본 지연 시간 증가
+RATE_LIMIT_DELAY = 1.5  # 기본 지연 시간
 DB_MAX_RETRIES = 3
 DB_RETRY_DELAY = 2
 API_CALL_MIN_INTERVAL = 0.1  # API 호출 간 최소 간격 (초)
@@ -418,14 +417,14 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return None
 
 # 429 에러 및 기타 HTTP 오류 재시도 로직
-async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
+async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None, ephemeral=False):
     files = files or []
     for attempt in range(max_retries):
         try:
             await rate_limit_api_call()  # API 호출 간 간격 보장
             if is_interaction and interaction:
-                await interaction.followup.send(content, files=files, view=view, ephemeral=True)
-                logger.info(f"Interaction followup sent: content={content[:50]}...")
+                await interaction.followup.send(content, files=files, view=view, ephemeral=ephemeral)
+                logger.info(f"Interaction followup sent: content={content[:50]}..., ephemeral={ephemeral}")
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
@@ -451,9 +450,9 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                 logger.error(f"HTTP 오류 발생: status={e.status}, message={e.text}, endpoint: {e.__dict__.get('url', 'unknown')}")
                 raise e
         except Exception as e:
-            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}, endpoint: unknown")
+            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}, endpoint: unknown, content={content[:50]}..., is_interaction={is_interaction}, ephemeral={ephemeral}")
             raise e
-    logger.error(f"최대 재시도 횟수 초과: content={content[:50]}...")
+    logger.error(f"최대 재시도 횟수 초과: content={content[:50]}..., is_interaction={is_interaction}, ephemeral={ephemeral}")
     raise discord.HTTPException(response=None, message="최대 재시도 횟수 초과")
 
 # 이미지 다운로드 함수
@@ -1057,7 +1056,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                     check=check,
                                     timeout=300.0
                                 )
-                                tech_answer = response.content.strip() if response.content.strip() else f"이미지TJ{response.attachments[0].url}" if response.attachments else ""
+                                tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                                 if tech_question["validator"](tech_answer):
                                     answers[field] = tech_answer
                                     break
