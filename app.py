@@ -317,9 +317,9 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
-# 429 에러 재시도 로직 (이미지 다운로드 및 첨부 개선)
+# 429 에러 재시도 로직
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
-    files = files or []  # None일 경우 빈 리스트로 설정
+    files = files or []
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
@@ -338,7 +338,6 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
             else:
                 await channel.send(content, files=files, view=view)
                 return None, None
-            await asyncio.sleep(RATE_LIMIT_DELAY)
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
@@ -520,7 +519,7 @@ class SelectionView(discord.ui.View):
                 await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
                 return
             await interaction.response.defer()
-            await self.callback(option)
+            await self.callback(option, interaction)
             self.stop()
         return button_callback
 
@@ -540,28 +539,37 @@ async def character_apply(interaction: discord.Interaction):
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
-    # 즉시 상호작용 응답
-    await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
+    # Defer the initial response to prevent timeout
+    await interaction.response.defer(ephemeral=True)
+    
+    # Send initial message using followup
+    await interaction.followup.send("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
 
-    async def handle_selection(field, option):
-        answers[field] = option
+    async def handle_selection(option, button_interaction):
+        answers[question["field"]] = option
+        # Confirm selection to user
+        await button_interaction.followup.send(f"{user.mention} {question['field']}으로 '{option}' 선택했어!", ephemeral=True)
 
     for question in questions:
         if question.get("condition") and not question["condition"](answers):
             continue
         if question.get("options"):
-            view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-            await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
-            await view.wait()
-            if question["field"] not in answers:
-                await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+            view = SelectionView(question["options"], question["field"], user, handle_selection)
+            try:
+                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                await view.wait()
+                if question["field"] not in answers:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
+                    return
+            except discord.HTTPException as e:
+                await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                 return
         elif question.get("field") == "사용 기술/마법/요력 추가 여부":
             if tech_counter >= 6:
                 continue
             while True:
-                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
                 try:
+                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
                     response = await bot.wait_for(
                         "message",
                         check=lambda m: m.author == user and m.channel == channel,
@@ -598,14 +606,14 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     return
                 except discord.HTTPException as e:
-                    await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     return
         else:
             while True:
-                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
-                def check(m):
-                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
+                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}")
+                    def check(m):
+                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                     response = await bot.wait_for(
                         "message",
                         check=check,
@@ -624,7 +632,7 @@ async def character_apply(interaction: discord.Interaction):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                     return
                 except discord.HTTPException as e:
-                    await send_message_with_retry(channel, f"❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     return
 
     while True:
@@ -642,17 +650,22 @@ async def character_apply(interaction: discord.Interaction):
             question = next(q for q in questions if q["field"] == field)
             while True:
                 if question.get("options"):
-                    view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
-                    await view.wait()
-                    if question["field"] not in answers:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                    view = SelectionView(question["options"], question["field"], user, handle_selection)
+                    try:
+                        await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                        await view.wait()
+                        if question["field"] not in answers:
+                            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                            return
+                        break
+                    except discord.HTTPException as e:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         return
                 else:
-                    await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
-                    def check(m):
-                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                     try:
+                        await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                        def check(m):
+                            return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                         response = await bot.wait_for(
                             "message",
                             check=check,
@@ -669,6 +682,9 @@ async def character_apply(interaction: discord.Interaction):
                             await send_message_with_retry(channel, question["error_message"])
                     except asyncio.TimeoutError:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                        return
+                    except discord.HTTPException as e:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         return
 
     # AI 심사에서 외모 필드 제외
@@ -687,7 +703,7 @@ async def character_apply(interaction: discord.Interaction):
     await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
 
 # 캐릭터 수정 명령어
-@bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 포스트 이름을 입력해줘~")
+@bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 포스트 이름을 입력해줐")
 async def character_edit(interaction: discord.Interaction, post_name: str):
     global answers, tech_counter
     user = interaction.user
@@ -729,8 +745,9 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         await send_message_with_retry(channel, f"{user.mention} ❌ 잘못된 입력이거나 시간이 초과됐어! 다시 시도해~ 🥹")
         return
 
-    async def handle_selection(field, option):
-        answers[field] = option
+    async def handle_selection(option, button_interaction):
+        answers[question["field"]] = option
+        await button_interaction.followup.send(f"{user.mention} {question['field']}으로 '{option}' 선택했어!", ephemeral=True)
 
     # 일반 항목 수정
     for index in selected_indices:
@@ -739,18 +756,22 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
         while True:
             if question.get("options"):
-                view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
-                await view.wait()
-                if question["field"] not in answers:
-                    await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                    return
-                break
-            else:
-                await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
-                def check(m):
-                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                view = SelectionView(question["options"], question["field"], user, handle_selection)
                 try:
+                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                    await view.wait()
+                    if question["field"] not in answers:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                        return
+                    break
+                except discord.HTTPException as e:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                    return
+            else:
+                try:
+                    await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
+                    def check(m):
+                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                     response = await bot.wait_for(
                         "message",
                         check=check,
@@ -767,6 +788,9 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         await send_message_with_retry(channel, question["error_message"])
                 except asyncio.TimeoutError:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                    return
+                except discord.HTTPException as e:
+                    await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                     return
 
     # 기술/마법/요력 수정
@@ -872,18 +896,22 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             question = next(q for q in questions if q["field"] == field)
             while True:
                 if question.get("options"):
-                    view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
-                    await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
-                    await view.wait()
-                    if question["field"] not in answers:
-                        await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
-                        return
-                    break
-                else:
-                    await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
-                    def check(m):
-                        return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    view = SelectionView(question["options"], question["field"], user, handle_selection)
                     try:
+                        await send_message_with_retry(channel, f"{user.mention} {question['prompt']}", view=view)
+                        await view.wait()
+                        if question["field"] not in answers:
+                            await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                            return
+                        break
+                    except discord.HTTPException as e:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
+                        return
+                else:
+                    try:
+                        await send_message_with_retry(channel, f"{user.mention} {field}을 다시 입력해: {question['prompt']}")
+                        def check(m):
+                            return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                         response = await bot.wait_for(
                             "message",
                             check=check,
@@ -900,6 +928,9 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                             await send_message_with_retry(channel, question["error_message"])
                     except asyncio.TimeoutError:
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
+                        return
+                    except discord.HTTPException as e:
+                        await send_message_with_retry(channel, f"{user.mention} ❌ 통신 오류야! {str(e)} 다시 시도해~ 🥹")
                         return
 
     # AI 심사에서 외모 필드 제외
