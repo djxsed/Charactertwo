@@ -67,7 +67,7 @@ DEFAULT_PROMPT = """
 - 금지 단어: {banned_words} (이미 확인됨).
 - 필수 항목: {required_fields} (이미 확인됨).
 - 허용 종족: {allowed_races}.
-- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법 위력(1~6) (이미 확인됨).
+- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법/요력 위력(1~6) (이미 확인됨).
 - 설명은 역할극에 적합해야 하며, 간단한 일상적 배경도 허용.
 - 시간/현실 조작 능력 금지.
 - 과거사: 시간 여행, 초자연적 능력(마법 제외), 비현실적 사건(예: 세계 구함, 우주 정복) 금지. 최소 20자면 충분히 구체적이며, 간단한 배경(예: 학교 입학, 가정사)도 통과.
@@ -469,7 +469,7 @@ async def process_flex_queue():
                                         tech_duration = answers.get(f"사용 기술/마법/요력 지속시간_{i}", "미기재")
                                         tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
                                         techs.append(f"<{tech_name}> (위력: {tech_power}, 쿨타임: {tech_cooldown}, 지속시간: {tech_duration})\n설명: {tech_desc}")
-                                formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력: 없음\n"
+                                formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력:\n없음\n"
                                 formatted_description += "\n"
                                 formatted_description += (
                                     f"과거사: {answers.get('과거사', '미기재')}\n"
