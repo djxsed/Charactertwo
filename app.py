@@ -837,7 +837,7 @@ async def character_apply(interaction: discord.Interaction):
         fields_to_correct = set()
         error_msg = "다음 문제들이 있어:\n"
         for fields, message in errors:
-            error_msg += f"- {message17": message}\n"
+            error_msg += f"- {message}\n"
             fields_to_correct.update(fields)
         await send_message_with_retry(channel, f"{user.mention} {error_msg}다시 입력해줘~")
 
