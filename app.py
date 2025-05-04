@@ -693,7 +693,32 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             continue
         question = next(q for q in questions if q["field"] == EDITABLE_FIELDS[index])
         while True:
-            await send_message_with_retry(channel, f"{userSCRIBE
+            await send_message_with_retry(channel, f"{user.mention} ✏️ '{question['label']}'의 새로운 내용을 입력해줘~")
+            try:
+                new_answer = await bot.wait_for(
+                    "message",
+                    check=lambda m: m.author == user and m.channel == channel,
+                    timeout=300.0
+                )
+                answers[question["field"]] = new_answer.content
+                await send_message_with_retry(channel, f"✅ '{question['label']}'이(가) '{new_answer.content}'으로 수정됐어!")
+                break
+            except asyncio.TimeoutError:
+                await send_message_with_retry(channel, f"{user.mention} ❌ 시간이 초과됐어! '{question['label']}' 수정을 다시 시도해줘~ 🥹")
+                return
+
+    # 기술/마법/요력 수정
+    if 15 in selected_indices:  # EDITABLE_FIELDS의 16번째 항목 (인덱스 15)
+        await handle_tech_edit(interaction, selected_char, answers)
+        return
+
+    # 수정 완료 및 DB 업데이트
+    await update_character_info(character_id, answers)
+    await interaction.followup.send(f"{user.mention} ✨ '{post_name}' 캐릭터 정보 수정이 완료됐어! 스레드를 확인해줘~")
+
+    thread = bot.get_channel(int(thread_id))
+    if thread:
+        await update_thread_content(thread, answers)
 
 # 캐릭터 수정 명령어 (계속)
 async def character_edit(interaction: discord.Interaction, post_name: str):
