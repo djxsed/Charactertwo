@@ -82,7 +82,7 @@ DEFAULT_PROMPT = """
 - 기술/마법/요력의 위력이 4이면 쿨타임이 15 이상이어야 함.
 - 기술/마법/요력의 위력이 5이면 쿨타임이 20 이상이어야 함.
 - 기술/마법/요력의 위력이 6이면 쿨타임이 40 이상이어야 함.
-- 지속 시간은 40을 초고하면 안됌.
+- 지속 시간은 39를 넘으면 안됌.
 - 기술/마법/요력의 쿨타임과 지속시간의 단위가 '지문'이라면 초로 해석.
 
 **역할 판단**:
@@ -514,7 +514,7 @@ async def process_flex_queue():
 # 버튼 뷰 클래스
 class SelectionView(discord.ui.View):
     def __init__(self, options, field, user, callback):
-        super().__init__(timeout=300.0)
+        super().__init__(timeout=600.0)
         self.options = options
         self.field = field
         self.user = user
@@ -575,7 +575,7 @@ async def character_apply(interaction: discord.Interaction):
                     response = await bot.wait_for(
                         "message",
                         check=lambda m: m.author == user and m.channel == channel,
-                        timeout=300.0
+                        timeout=600.0
                     )
                     answer = response.content.strip()
                     if question["validator"](answer):
@@ -598,7 +598,7 @@ async def character_apply(interaction: discord.Interaction):
                                             response = await bot.wait_for(
                                                 "message",
                                                 check=check,
-                                                timeout=300.0
+                                                timeout=600.0
                                             )
                                             tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}"
                                             if tech_question["validator"](tech_answer):
@@ -627,7 +627,7 @@ async def character_apply(interaction: discord.Interaction):
                     response = await bot.wait_for(
                         "message",
                         check=check,
-                        timeout=300.0
+                        timeout=600.0
                     )
                     if question["field"] == "외모" and response.attachments:
                         answer = f"이미지_{response.attachments[0].url}"
@@ -674,7 +674,7 @@ async def character_apply(interaction: discord.Interaction):
                         response = await bot.wait_for(
                             "message",
                             check=check,
-                            timeout=300.0
+                            timeout=600.0
                         )
                         if field == "외모" and response.attachments:
                             answer = f"이미지_{response.attachments[0].url}"
@@ -737,7 +737,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         response = await bot.wait_for(
             "message",
             check=lambda m: m.author == user and m.channel == channel,
-            timeout=300.0
+            timeout=600.0
         )
         selected_indices = [int(i.strip()) - 1 for i in response.content.split(",")]
         if not all(0 <= i < len(EDITABLE_FIELDS) for i in selected_indices):
@@ -772,7 +772,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     response = await bot.wait_for(
                         "message",
                         check=check,
-                        timeout=300.0
+                        timeout=600.0
                     )
                     if question["field"] == "외모" and response.attachments:
                         answer = f"이미지_{response.attachments[0].url}"
@@ -797,7 +797,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             response = await bot.wait_for(
                 "message",
                 check=lambda m: m.author == user and m.channel == channel,
-                timeout=300.0
+                timeout=600.0
             )
             actions = [a.strip() for a in response.content.split(",")]
         except asyncio.TimeoutError:
@@ -827,7 +827,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                         response = await bot.wait_for(
                                             "message",
                                             check=check,
-                                            timeout=300.0
+                                            timeout=600.0
                                         )
                                         tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                                         if tech_question["validator"](tech_answer):
@@ -859,7 +859,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                     response = await bot.wait_for(
                                         "message",
                                         check=check,
-                                        timeout=300.0
+                                        timeout=600.0
                                     )
                                     tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                                     if tech_question["validator"](tech_answer):
@@ -877,7 +877,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     response = await bot.wait_for(
                         "message",
                         check=lambda m: m.author == user and m.channel == channel,
-                        timeout=300.0
+                        timeout=600.0
                     )
                     idx = int(response.content.strip()) - 1
                     if 0 <= idx < len(techs):
@@ -922,7 +922,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         response = await bot.wait_for(
                             "message",
                             check=check,
-                            timeout=300.0
+                            timeout=600.0
                         )
                         if field == "외모" and response.attachments:
                             answer = f"이미지_{response.attachments[0].url}"
