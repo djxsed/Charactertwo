@@ -15,6 +15,7 @@ import threading
 import time
 import aiohttp
 import logging
+import aiohttp
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,9 +51,10 @@ REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
 LOG_CHANNEL_ID = 1358060156742533231
 COOLDOWN_SECONDS = 5
 MAX_REQUESTS_PER_DAY = 1000
-RATE_LIMIT_DELAY = 1.0
+RATE_LIMIT_DELAY = 1.5  # 기본 지연 시간 증가
 DB_MAX_RETRIES = 3
 DB_RETRY_DELAY = 2
+API_CALL_MIN_INTERVAL = 0.1  # API 호출 간 최소 간격 (초)
 
 # 기본 설정값
 DEFAULT_ALLOWED_RACES = ["인간", "마법사", "요괴"]
@@ -111,20 +113,20 @@ questions = [
     {"field": "성격", "prompt": "성격을 설명해주세요. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "성격 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."},
     {"field": "외모", "prompt": "외모를 설명(최소 20자)하거나 이미지를 업로드해주세요.", "validator": lambda x: (len(x) >= 20 if isinstance(x, str) and not x.startswith("이미지_") else True), "error_message": "외모 설명이 너무 짧습니다. 최소 20자 이상 입력하거나 이미지를 업로드해주세요."},
     {"field": "소속", "prompt": "소속을 선택해주세요.", "options": ["학생", "선생님", "A.M.L"], "error_message": "허용되지 않은 소속입니다. 학생, 선생님, A.M.L 중에서 선택해주세요."},
-    {"field": "학년 및 반", "prompt": "학년과 반을 입력해주세요. (예: 1학년 2반, 1-2반, 1/2반)", "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x), "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해주세요.", "condition": lambda answers: answers.get("소속") == "학생"},
-    {"field": "담당 과목 및 학년, 반", "prompt": "담당 과목과 학년, 반을 입력해주세요. (예: 수학, 1학년 2반)", "validator": lambda x: len(x) > 0, "error_message": "담당 과목과 학년, 반을 입력해주세요.", "condition": lambda answers: answers.get("소속") == "선생님"},
-    {"field": "체력", "prompt": "체력 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "체력은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "지능", "prompt": "지능 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "지능은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "이동속도", "prompt": "이동속도 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "이동속도는 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "힘", "prompt": "힘 수치를 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "힘은 1에서 6 사이의 숫자여야 합니다."},
-    {"field": "냉철", "prompt": "냉철 수치를 입력해주세요. (1~4)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 4, "error_message": "냉철은 1에서 4 사이의 숫자여야 합니다."},
-    {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 입력해주세요. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까? (예/아니요)", "validator": lambda x: x in ["예", "아니요"], "error_message": "예 또는 아니요로 입력해주세요."},
-    {"field": "과거사", "prompt": "과거사를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
-    {"field": "특징", "prompt": "특징을 설명해주세요. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "특징 설명이 너무 짧습니다. 최소 10자 이상 입력해주세요."},
-    {"field": "관계", "prompt": "관계를 설명해주세요. (없으면 '없음' 입력)", "validator": lambda x: True, "error_message": ""},
+    {"field": "학년 및 반", "prompt": "학년과 반을 입력해줘. (예: 1학년 2반, 1-2반, 1/2반)", "validator": lambda x: re.match(r"^\d[-/]\d반$|^\d학년\s*\d반$", x), "error_message": "학년과 반은 'x-y반', 'x학년 y반', 'x/y반' 형식으로 입력해줘.", "condition": lambda answers: answers.get("소속") == "학생"},
+    {"field": "담당 과목 및 학년, 반", "prompt": "담당 과목과 학년, 반을 입력해줘. (예: 수학, 1학년 2반)", "validator": lambda x: len(x) > 0, "error_message": "담당 과목과 학년, 반을 입력해줘.", "condition": lambda answers: answers.get("소속") == "선생님"},
+    {"field": "체력", "prompt": "체력 수치를 입력해줘. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "체력은 1에서 6 사이의 숫자여야 해."},
+    {"field": "지능", "prompt": "지능 수치를 입력해줘. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "지능은 1에서 6 사이의 숫자여야 해."},
+    {"field": "이동속도", "prompt": "이동속도 수치를 입력해줘. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "이동속도는 1에서 6 사이의 숫자여야 해."},
+    {"field": "힘", "prompt": "힘 수치를 입력해줘. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "힘은 1에서 6 사이의 숫자여야 해."},
+    {"field": "냉철", "prompt": "냉철 수치를 입력해줘. (1~4)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 4, "error_message": "냉철은 1에서 4 사이의 숫자여야 해."},
+    {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력을 입력해줘.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해줘.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 입력해줘. (1~6)", "validator": lambda x: x.isdigit() and 1 <= int(x) <= 6, "error_message": "위력은 1에서 6 사이의 숫자여야 해.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해줘. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧아. 최소 20자 이상 입력해줘.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가할래? (예/아니요)", "validator": lambda x: x in ["예", "아니요"], "error_message": "예 또는 아니요로 입력해줘."},
+    {"field": "과거사", "prompt": "과거사를 설명해줘. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧아. 최소 20자 이상 입력해줘."},
+    {"field": "특징", "prompt": "특징을 설명해줘. (최소 10자)", "validator": lambda x: len(x) >= 10, "error_message": "특징 설명이 너무 짧아. 최소 10자 이상 입력해줘."},
+    {"field": "관계", "prompt": "관계를 설명해줘. (없으면 '없음' 입력)", "validator": lambda x: True, "error_message": ""},
 ]
 
 # 수정 가능한 항목 목록
@@ -132,6 +134,20 @@ EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술
 
 # Flex 작업 큐
 flex_queue = deque()
+
+# 글로벌 속도 제한 관리자
+last_api_call = 0
+api_lock = asyncio.Lock()
+
+async def rate_limit_api_call():
+    """API 호출 간 최소 간격을 보장"""
+    global last_api_call
+    async with api_lock:
+        now = time.time()
+        time_since_last = now - last_api_call
+        if time_since_last < API_CALL_MIN_INTERVAL:
+            await asyncio.sleep(API_CALL_MIN_INTERVAL - time_since_last)
+        last_api_call = time.time()
 
 # 데이터베이스 초기화
 async def init_db():
@@ -406,8 +422,10 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
     files = files or []
     for attempt in range(max_retries):
         try:
+            await rate_limit_api_call()  # API 호출 간 간격 보장
             if is_interaction and interaction:
                 await interaction.followup.send(content, files=files, view=view, ephemeral=True)
+                logger.info(f"Interaction followup sent: content={content[:50]}...")
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
@@ -418,37 +436,41 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                     files=files
                 )
                 thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
+                logger.info(f"Thread created: thread_name={thread_name}, thread_id={thread_id}")
                 return thread, thread_id
             else:
                 await channel.send(content, files=files, view=view)
+                logger.info(f"Message sent: content={content[:50]}...")
                 return None, None
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
-                logger.warning(f"429 에러 발생, {retry_after}초 후 재시도...")
-                await asyncio.sleep(retry_after)
+                logger.warning(f"429 에러 발생, 재시도 {attempt + 1}/{max_retries}, 대기 시간: {retry_after}초, endpoint: {e.__dict__.get('url', 'unknown')}")
+                await asyncio.sleep(retry_after + RATE_LIMIT_DELAY)
             else:
-                logger.error(f"HTTP 오류 발생: {e}")
+                logger.error(f"HTTP 오류 발생: status={e.status}, message={e.text}, endpoint: {e.__dict__.get('url', 'unknown')}")
                 raise e
         except Exception as e:
-            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}")
+            logger.error(f"메시지 전송 중 예상치 못한 오류: {e}, endpoint: unknown")
             raise e
-    logger.error("최대 재시도 횟수 초과.")
-    raise discord.HTTPException("최대 재시도 횟수 초과")
+    logger.error(f"최대 재시도 횟수 초과: content={content[:50]}...")
+    raise discord.HTTPException(response=None, message="최대 재시도 횟수 초과")
 
 # 이미지 다운로드 함수
 async def download_image(image_url):
     try:
+        await rate_limit_api_call()  # API 호출 간 간격 보장
         async with aiohttp.ClientSession() as session:
             async with session.get(image_url) as response:
                 if response.status == 200:
                     content = await response.read()
+                    logger.info(f"이미지 다운로드 성공: url={image_url}")
                     return discord.File(fp=content, filename="appearance.png")
                 else:
-                    logger.warning(f"이미지 다운로드 실패: {image_url}, 상태 코드: {response.status}")
+                    logger.warning(f"이미지 다운로드 실패: url={image_url}, 상태 코드: {response.status}")
                     return None
     except Exception as e:
-        logger.error(f"이미지 다운로드 중 에러: {e}")
+        logger.error(f"이미지 다운로드 중 에러: url={image_url}, 에러: {e}")
         return None
 
 # Flex 작업 처리
@@ -597,7 +619,6 @@ async def process_flex_queue():
                                             failed_fields.append(field)
                                     result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                                await save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, post_name)
                                 await send_message_with_retry(channel, f"{member.mention} {result}")
                                 await db.execute("UPDATE flex_tasks SET status = ? WHERE task_id = ?", ("completed", task_id))
                                 await db.commit()
@@ -658,12 +679,24 @@ async def character_apply(interaction: discord.Interaction):
     # Defer the initial response to prevent timeout
     await interaction.response.defer(ephemeral=True)
     
-    # Send initial message using followup
-    await interaction.followup.send("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
+    # Send initial message using send_message_with_retry
+    await send_message_with_retry(
+        channel,
+        f"{user.mention} ✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊",
+        is_interaction=True,
+        interaction=interaction,
+        ephemeral=True
+    )
 
     async def handle_selection(option, button_interaction):
         answers[question["field"]] = option
-        await button_interaction.followup.send(f"{user.mention} {question['field']}으로 '{option}' 선택했어!", ephemeral=True)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} {question['field']}으로 '{option}' 선택했어!",
+            is_interaction=True,
+            interaction=button_interaction,
+            ephemeral=True
+        )
         await asyncio.sleep(0.1)  # 중복 전송 방지
 
     for question in questions:
@@ -827,10 +860,22 @@ async def character_apply(interaction: discord.Interaction):
     task_id = await queue_flex_task(character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
     if task_id:
         await save_result(character_id, description, False, "심사 중", None, str(user.id), answers.get("이름"), answers.get("종족"), answers.get("나이"), answers.get("성별"), None, answers.get("포스트 이름"))
-        await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊",
+            is_interaction=True,
+            interaction=interaction,
+            ephemeral=True
+        )
         logger.info(f"캐릭터 심사 요청 완료: character_id={character_id}, user_id={user.id}")
     else:
-        await send_message_with_retry(channel, f"{user.mention} ❌ 심사 요청에 실패했어! 다시 시도해~ 🥹", is_interaction=True, interaction=interaction)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} ❌ 심사 요청에 실패했어! 다시 시도해~ 🥹",
+            is_interaction=True,
+            interaction=interaction,
+            ephemeral=True
+        )
         logger.error(f"캐릭터 심사 요청 실패: character_id={character_id}, user_id={user.id}")
 
 # 캐릭터 수정 명령어
@@ -862,7 +907,14 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         return
 
     answers["포스트 이름"] = post_name
-    await interaction.response.send_message(f"✅ '{post_name}' 수정 시작! 수정할 항목 번호를 쉼표로 구분해 입력해줘~", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    await send_message_with_retry(
+        channel,
+        f"{user.mention} ✅ '{post_name}' 수정 시작! 수정할 항목 번호를 쉼표로 구분해 입력해줘~",
+        is_interaction=True,
+        interaction=interaction,
+        ephemeral=True
+    )
     fields_list = "\n".join([f"{i+1}. {field}" for i, field in enumerate(EDITABLE_FIELDS)])
     await send_message_with_retry(channel, f"{user.mention} 수정할 항목 번호를 쉼표로 구분해 입력해줘 (예: 1,3,5). 기술/마법/요력 수정은 {EDITABLE_FIELDS.index('사용 기술/마법/요력') + 1}번 선택!\n{fields_list}")
 
@@ -884,7 +936,13 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
 
     async def handle_selection(option, button_interaction):
         answers[question["field"]] = option
-        await button_interaction.followup.send(f"{user.mention} {question['field']}으로 '{option}' 선택했어!", ephemeral=True)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} {question['field']}으로 '{option}' 선택했어!",
+            is_interaction=True,
+            interaction=button_interaction,
+            ephemeral=True
+        )
         await asyncio.sleep(0.1)  # 중복 전송 방지
 
     # 일반 항목 수정
@@ -999,7 +1057,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                                     check=check,
                                     timeout=300.0
                                 )
-                                tech_answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
+                                tech_answer = response.content.strip() if response.content.strip() else f"이미지TJ{response.attachments[0].url}" if response.attachments else ""
                                 if tech_question["validator"](tech_answer):
                                     answers[field] = tech_answer
                                     break
@@ -1105,10 +1163,22 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
     )
     task_id = await queue_flex_task(character_id, description, str(user.id), str(channel.id), thread_id, "character_check", prompt)
     if task_id:
-        await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊",
+            is_interaction=True,
+            interaction=interaction,
+            ephemeral=True
+        )
         logger.info(f"캐릭터 수정 심사 요청 완료: character_id={character_id}, user_id={user.id}")
     else:
-        await send_message_with_retry(channel, f"{user.mention} ❌ 심사 요청에 실패했어! 다시 시도해~ 🥹", is_interaction=True, interaction=interaction)
+        await send_message_with_retry(
+            channel,
+            f"{user.mention} ❌ 심사 요청에 실패했어! 다시 시도해~ 🥹",
+            is_interaction=True,
+            interaction=interaction,
+            ephemeral=True
+        )
         logger.error(f"캐릭터 수정 심사 요청 실패: character_id={character_id}, user_id={user.id}")
 
 # 캐릭터 목록 명령어
