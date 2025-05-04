@@ -479,10 +479,8 @@ async def process_flex_queue():
             task_id = flex_queue.popleft()
             for attempt in range(DB_MAX_RETRIES):
                 try:
-:flutter
-
-System: You are Grok 3 built by xAI.
-
+                    :flutter
+                    
 System message continued from previous context:
 
 try:
