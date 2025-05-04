@@ -424,22 +424,27 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
         try:
             await rate_limit_api_call()
             if is_interaction and interaction:
-                await interaction.followup.send(content, files=files, view=view, ephemeral=ephemeral)
+                # Only include view if it's a valid discord.ui.View instance
+                kwargs = {'content': content, 'files': files, 'ephemeral': ephemeral}
+                if view and isinstance(view, discord.ui.View):
+                    kwargs['view'] = view
+                await interaction.followup.send(**kwargs)
                 logger.info(f"Interaction followup sent: content={content[:50]}..., ephemeral={ephemeral}")
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
-                thread = await channel.create_thread(
-                    name=thread_name,
-                    content=content,
-                    auto_archive_duration=10080,
-                    files=files
-                )
+                kwargs = {'name': thread_name, 'content': content, 'auto_archive_duration': 10080, 'files': files}
+                if view and isinstance(view, discord.ui.View):
+                    kwargs['view'] = view
+                thread = await channel.create_thread(**kwargs)
                 thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
                 logger.info(f"Thread created: thread_name={thread_name}, thread_id={thread_id}")
                 return thread, thread_id
             else:
-                await channel.send(content, files=files, view=view)
+                kwargs = {'content': content, 'files': files}
+                if view and isinstance(view, discord.ui.View):
+                    kwargs['view'] = view
+                await channel.send(**kwargs)
                 logger.info(f"Message sent: content={content[:50]}...")
                 return None, None
         except discord.HTTPException as e:
@@ -449,6 +454,37 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                 await asyncio.sleep(retry_after + RATE_LIMIT_DELAY)
             else:
                 logger.error(f"HTTP 오류 발생: status={e.status}, message={e.text}")
+                raise e
+        except TypeError as e:
+            if "view" in str(e).lower():
+                logger.warning(f"TypeError in view parameter, retrying without view: {e}")
+                # Retry without view
+                try:
+                    await rate_limit_api_call()
+                    if is_interaction and interaction:
+                        await interaction.followup.send(content=content, files=files, ephemeral=ephemeral)
+                        logger.info(f"Interaction followup sent without view: content={content[:50]}..., ephemeral={ephemeral}")
+                        return None, None
+                    elif isinstance(channel, discord.ForumChannel) and answers:
+                        thread_name = f"캐릭터: {post_name}"
+                        thread = await channel.create_thread(
+                            name=thread_name,
+                            content=content,
+                            auto_archive_duration=10080,
+                            files=files
+                        )
+                        thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
+                        logger.info(f"Thread created without view: thread_name={thread_name}, thread_id={thread_id}")
+                        return thread, thread_id
+                    else:
+                        await channel.send(content=content, files=files)
+                        logger.info(f"Message sent without view: content={content[:50]}...")
+                        return None, None
+                except Exception as inner_e:
+                    logger.error(f"Retry without view failed: {inner_e}")
+                    raise inner_e
+            else:
+                logger.error(f"Unexpected TypeError: {e}")
                 raise e
         except Exception as e:
             logger.error(f"메시지 전송 중 예상치 못한 오류: {e}")
@@ -981,7 +1017,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     else:
                         answer = response.content.strip() if response.content.strip() else f"이미지_{response.attachments[0].url}" if response.attachments else ""
                     if question["validator"](answer):
-                        answers[question["field"]] = litigant
+                        answers[question["field"]] = answer
                         break
                     else:
                         await send_message_with_retry(channel, question["error_message"])
@@ -1003,7 +1039,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
         try:
             response = await bot.wait_for(
                 "message",
-                check=lambda m: m.author == user and MORF == channel,
+                check=lambda m: m.author == user and m.channel == channel,
                 timeout=300.0
             )
             actions = [a.strip() for a in response.content.split(",")]
