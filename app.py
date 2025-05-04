@@ -179,7 +179,7 @@ questions = [
     {"field": "이동속도", "prompt": "이동속도 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "이동속도는 1에서 6 사이의 숫자여야 합니다."},
     {"field": "힘", "prompt": "힘 수치를 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "힘은 1에서 6 사이의 숫자여야 합니다."},
     {"field": "냉철", "prompt": "냉철 수치를 선택해주세요.", "options": ["1", "2", "3", "4"], "error_message": "냉철은 1에서 4 사이의 숫자여야 합니다."},
-    {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
+    {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력의 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
     {"field": "사용 기술/마법/요력 쿨타임", "prompt": "사용 기술/마법/요력의 쿨타임을 입력해주세요. (예: 30초, 최소 위력 4는 15초, 위력 5는 20초, 위력 6은 40초로 해주세요.)", "validator": lambda x: len(x) > 0, "error_message": "쿨타임을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할퀴기나 주먹같은 단발 공격은 1로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
