@@ -12,6 +12,7 @@ import asyncio
 from collections import deque
 from flask import Flask
 import threading
+import time
 import aiohttp
 
 # Flask 웹 서버 설정
@@ -25,7 +26,7 @@ def home():
 load_dotenv()
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/bot.db")
+DB_PATH = os.getenv("DB_PATH", "/opt/render/project/src/bot.db")  # Render에서 쓰기 가능한 경로
 
 # OpenAI API 설정
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -86,6 +87,9 @@ DEFAULT_PROMPT = """
 - 설정 참고해서 과거사 보기.
 - 만약 종족이 요괴인데 AML이면 안된다.(과거사나 특징에서 요괴 정체를 숨기고 있는 것이라면 통과).
 - 만약 기술/마법/요력이 장비 혹은 무기라면 지속 시간과 쿨타임이 양식을 어긋나도 통과.
+- 키/몸무게에 cm/kg 단위가 없어도 cm/kg으로 해석.(예:180/80,180cm/80kg)
+- 키/몸무게에 300m 이상의 키와 10000kg 이상의 몸무게는 안된다.
+
 
 **역할 판단**:
 1. 소속에 'AML' 포함 → AML.
@@ -387,16 +391,13 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     flex_queue.append(task_id)
     return task_id
 
-# 429 에러 재시도 로직
+# 429 에러 재시도 로직 (이미지 다운로드 및 첨부 개선)
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
-    files = files or []
+    files = files or []  # None일 경우 빈 리스트로 설정
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
-                if not interaction.response.is_done():
-                    await interaction.response.send_message(content, files=files, view=view, ephemeral=True)
-                else:
-                    await interaction.followup.send(content, files=files, view=view, ephemeral=True)
+                await interaction.followup.send(content, files=files, view=view)
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
@@ -502,6 +503,7 @@ async def process_flex_queue():
                                         await member.add_roles(race_role)
                                         result += f" (종족 `{race}` 부여했어! 😊)"
 
+                                # 출력 양식
                                 formatted_description = (
                                     f"이름: {answers.get('이름', '미기재')}\n"
                                     f"성별: {answers.get('성별', '미기재')}\n"
@@ -594,8 +596,7 @@ class SelectionView(discord.ui.View):
                 await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
                 return
             await interaction.response.send_message(f"{option}을(를) 선택했어!", ephemeral=True)
-            if self.callback is not None:
-                await self.callback(option)
+            await self.callback(option)
             self.stop()
         return button_callback
 
@@ -607,16 +608,16 @@ class SelectionView(discord.ui.View):
 async def character_apply(interaction: discord.Interaction):
     user = interaction.user
     channel = interaction.channel
-    answers = {}
-    tech_counter = 0
+    answers = {}  # Local scope to prevent overlap between users
+    tech_counter = 0  # Local scope for each application
 
     can_proceed, error_message = await check_cooldown(str(user.id))
     if not can_proceed:
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
-    await interaction.response.defer(ephemeral=True)
-    await interaction.followup.send("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
+    # 즉시 상호작용 응답
+    await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
 
     async def handle_selection(field, option):
         nonlocal answers
@@ -626,6 +627,7 @@ async def character_apply(interaction: discord.Interaction):
         if question.get("condition") and not question["condition"](answers):
             continue
         if question.get("field") == "사용 기술/마법/요력 추가 여부" and tech_counter > 0:
+            # Ask to add more skills only if at least one skill exists and limit not reached
             if tech_counter >= 6:
                 continue
             view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
@@ -637,6 +639,7 @@ async def character_apply(interaction: discord.Interaction):
             if answers[question["field"]] != "예":
                 continue
         if question.get("is_tech") and ("사용 기술/마법/요력 추가 여부" not in answers or answers.get("사용 기술/마법/요력 추가 여부") == "예" or tech_counter == 0):
+            # Handle skill-related questions
             if tech_counter >= 6:
                 continue
             while True:
@@ -665,8 +668,9 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                         return
             if question["field"] == "사용 기술/마법/요력 설명":
-                tech_counter += 1
+                tech_counter += 1  # Increment only after full skill set is added
         elif question.get("field") != "사용 기술/마법/요력 추가 여부":
+            # Handle non-skill questions
             while True:
                 if question.get("options"):
                     view = SelectionView(question["options"], question["field"], user, lambda option: handle_selection(question["field"], option))
@@ -695,6 +699,7 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                         return
 
+    # Validate answers
     while True:
         errors = validate_all(answers)
         if not errors:
@@ -735,6 +740,7 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
 
+    # Prepare for AI review
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
@@ -794,6 +800,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
     async def handle_selection(field, option):
         answers[field] = option
 
+    # 일반 항목 수정
     for index in selected_indices:
         if "사용 기술/마법/요력" in EDITABLE_FIELDS[index]:
             continue
@@ -830,6 +837,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
 
+    # 기술/마법/요력 수정
     if any("사용 기술/마법/요력" in EDITABLE_FIELDS[i] for i in selected_indices):
         techs = [(k, answers[k], answers.get(f"사용 기술/마법/요력 위력_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 쿨타임_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 지속시간_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 설명_{k.split('_')[1]}"))
                  for k in sorted([k for k in answers if k.startswith("사용 기술/마법/요력_")], key=lambda x: int(x.split('_')[1]))]
@@ -979,6 +987,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
 
+    # AI 심사에서 외모 필드 제외
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
@@ -1017,9 +1026,12 @@ async def on_ready():
 
 # Flask와 디스코드 봇 실행
 if __name__ == "__main__":
+    # Flask 서버를 별도 스레드에서 실행
     flask_thread = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000))),
         daemon=True
     )
     flask_thread.start()
+
+    # 디스코드 봇 실행
     bot.run(DISCORD_TOKEN)
