@@ -393,7 +393,10 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
     for attempt in range(max_retries):
         try:
             if is_interaction and interaction:
-                await interaction.followup.send(content, files=files, view=view)
+                if not interaction.response.is_done():
+                    await interaction.response.send_message(content, files=files, view=view, ephemeral=True)
+                else:
+                    await interaction.followup.send(content, files=files, view=view, ephemeral=True)
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers:
                 thread_name = f"캐릭터: {post_name}"
@@ -591,7 +594,7 @@ class SelectionView(discord.ui.View):
                 await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
                 return
             await interaction.response.send_message(f"{option}을(를) 선택했어!", ephemeral=True)
-            if self.callback is not None:  # None 체크 추가
+            if self.callback is not None:
                 await self.callback(option)
             self.stop()
         return button_callback
@@ -612,7 +615,8 @@ async def character_apply(interaction: discord.Interaction):
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
-    await interaction.response.send_message("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
+    await interaction.response.defer(ephemeral=True)
+    await interaction.followup.send("✅ 캐릭터 신청 시작! 질문에 하나씩 답해줘~ 😊", ephemeral=True)
 
     async def handle_selection(field, option):
         nonlocal answers
