@@ -390,7 +390,7 @@ async def process_flex_queue():
 
             try:
                 response = openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
+                    model="gpt-4.1-nano",
                     messages=[{"role": "user", "content": task["prompt"]}],
                     max_tokens=50
                 )
