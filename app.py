@@ -483,22 +483,83 @@ async def process_flex_queue():
                                 f"관계: {answers.get('관계', '미기재')}"
                             )
 
+                            # 수정: 캐릭터-목록 채널 등록 로직 개선
                             char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
-                            if char_channel:
-                                if task["thread_id"]:
-                                    thread = bot.get_channel(int(task["thread_id"]))
-                                    if thread:
-                                        messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
-                                        if messages:
-                                            await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
-                                    else:
-                                        thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name, files=files)
-                                        task["thread_id"] = new_thread_id
-                                else:
-                                    thread, new_thread_id = await send_message_with_retry(char_channel, f"{member.mention}의 캐릭터:\n{formatted_description}", answers, post_name, files=files)
-                                    task["thread_id"] = new_thread_id
+                            if not char_channel:
+                                print("캐릭터-목록 채널을 찾을 수 없습니다.")  # 디버깅 메시지
+                                result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 서버 관리자에게 문의해~ 🥺"
                             else:
-                                result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 🥺"
+                                print(f"캐릭터-목록 채널 발견: {char_channel.name} (ID: {char_channel.id})")  # 디버깅 메시지
+                                try:
+                                    if isinstance(char_channel, discord.ForumChannel):
+                                        # 포럼 채널인 경우 스레드 생성/편집
+                                        if task["thread_id"]:
+                                            thread = bot.get_channel(int(task["thread_id"]))
+                                            if thread:
+                                                print(f"기존 스레드 발견: {thread.name} (ID: {thread.id})")  # 디버깅 메시지
+                                                messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
+                                                if messages:
+                                                    await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
+                                                    print("기존 스레드 편집 완료")  # 디버깅 메시지
+                                                else:
+                                                    print("기존 스레드 메시지 없음, 새 메시지 작성")  # 디버깅 메시지
+                                                    await thread.send(f"{member.mention}의 캐릭터:\n{formatted_description}", files=files)
+                                            else:
+                                                print("기존 스레드 ID 유효하지 않음, 새 스레드 생성")  # 디버깅 메시지
+                                                thread, new_thread_id = await send_message_with_retry(
+                                                    char_channel,
+                                                    f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                                    answers,
+                                                    post_name,
+                                                    files=files
+                                                )
+                                                task["thread_id"] = new_thread_id
+                                                print(f"새 스레드 생성: {new_thread_id}")  # 디버깅 메시지
+                                        else:
+                                            print("스레드 ID 없음, 새 스레드 생성")  # 디버깅 메시지
+                                            thread, new_thread_id = await send_message_with_retry(
+                                                char_channel,
+                                                f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                                answers,
+                                                post_name,
+                                                files=files
+                                            )
+                                            task["thread_id"] = new_thread_id
+                                            print(f"새 스레드 생성: {new_thread_id}")  # 디버깅 메시지
+                                    else:
+                                        # 일반 텍스트 채널인 경우 메시지 전송
+                                        if task["thread_id"]:
+                                            thread = bot.get_channel(int(task["thread_id"]))
+                                            if thread:
+                                                print(f"기존 메시지 채널 발견: {thread.name} (ID: {thread.id})")  # 디버깅 메시지
+                                                messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
+                                                if messages:
+                                                    await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
+                                                    print("기존 메시지 편집 완료")  # 디버깅 메시지
+                                                else:
+                                                    print("기존 메시지 없음, 새 메시지 작성")  # 디버깅 메시지
+                                                    await thread.send(f"{member.mention}의 캐릭터:\n{formatted_description}", files=files)
+                                            else:
+                                                print("기존 메시지 채널 ID 유효하지 않음, 새 메시지 전송")  # 디버깅 메시지
+                                                message, _ = await send_message_with_retry(
+                                                    char_channel,
+                                                    f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                                    files=files
+                                                )
+                                                task["thread_id"] = str(message.id)
+                                                print(f"새 메시지 전송: {message.id}")  # 디버깅 메시지
+                                        else:
+                                            print("메시지 ID 없음, 새 메시지 전송")  # 디버깅 메시지
+                                            message, _ = await send_message_with_retry(
+                                                char_channel,
+                                                f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                                files=files
+                                            )
+                                            task["thread_id"] = str(message.id)
+                                            print(f"새 메시지 전송: {message.id}")  # 디버깅 메시지
+                                except Exception as e:
+                                    print(f"캐릭터-목록 채널 등록 중 오류: {str(e)}")  # 디버깅 메시지
+                                    result += f"\n❌ 캐릭터-목록 채널 등록 중 오류 발생: {str(e)} 🥺"
                 else:
                     failed_fields = []
                     for field in answers:
@@ -506,11 +567,26 @@ async def process_flex_queue():
                             failed_fields.append(field)
                     result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                await save_result(task["character_id"], task["description"], pass_status, reason, role_name, task["user_id"], character_name, race, age, gender, task["thread_id"], post_name)
+                # 수정: thread_id 저장
+                await save_result(
+                    task["character_id"],
+                    task["description"],
+                    pass_status,
+                    reason,
+                    role_name,
+                    task["user_id"],
+                    character_name,
+                    race,
+                    age,
+                    gender,
+                    task["thread_id"],
+                    post_name
+                )
                 await send_message_with_retry(channel, f"{member.mention} {result}")
                 task["status"] = "completed"
 
             except Exception as e:
+                print(f"Flex 작업 처리 중 오류: {str(e)}")  # 디버깅 메시지
                 await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
                 task["status"] = "failed"
         await asyncio.sleep(1)
@@ -601,7 +677,7 @@ async def character_apply(interaction: discord.Interaction):
                 while True:
                     if tech_question.get("options"):
                         view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
-                        message, _ = await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                        message, _ = await send_message_with_retry(channel, f"{tech_question['prompt']}", view=view)
                         view.message = message
                         await view.wait()
                         if field not in answers:
