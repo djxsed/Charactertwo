@@ -115,13 +115,13 @@ DEFAULT_PROMPT = """
 각 항목 1~7 (능력만 1~9). 기준은 아래 표 참조.
 
 지능
-1 = IQ 60–80, 2 = 90, 3 = 100, 4 = 120, 5 = 150, 6 = 180  
+1 = IQ 60~80, 2 = 90, 3 = 100, 4 = 120, 5 = 150, 6 = 180  
 
 힘
-1 = up to 29kg, 2 = 30kg, 3 = 50kg, 4 = 125kg, 5 = 300kg, 6 = 600kg  
+1 = 29kg 이하, 2 = 30kg, 3 = 50kg, 4 = 125kg, 5 = 300kg, 6 = 600kg  
 
 이동속도
-1 = 100m in 41, 2 = 40~26s, 3 = 25–20s, 4 = 19–13s, 5 = 12–6s, 6 = 5–3s  
+1 = 100m in 41, 2 = 40~26s, 3 = 25–20s, 4 = 19~13s, 5 = 12–6s, 6 = 5~3s  
 
 냉철
 1 = 원초적 감정, 2 = 평범한 청소년, 3 = 격한 감정 무시, 4 = 감정 동요 없음
@@ -130,7 +130,7 @@ DEFAULT_PROMPT = """
 1 = 간신히 생존, 2 = 운동 부족, 3 = 평범한 청소년, 4 = 운동선수, 5 = 초인적 맷집, 6 = 인간 한계 초월
 
 능력/마법/기술 위력
-1 = 피해 없음, 2 = 일반인에게 경미한 상처, 3 = 일반인에게 깊은 상처, 4 = 작은 콘크리트 파괴, 5 = 큰 콘크리트 파괴, 6 = 작은 건물 파괴
+1 = 일반인에게 피해 없음, 2 = 일반인에게 경미한 상처, 3 = 일반인에게 깊은 상처, 4 = 작은 콘크리트 파괴, 5 = 큰 콘크리트 파괴, 6 = 작은 건물 파괴
 
 **캐릭터 설명**:
 {description}
@@ -161,7 +161,7 @@ questions = [
     {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력의 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
     {"field": "사용 기술/마법/요력 쿨타임", "prompt": "사용 기술/마법/요력의 쿨타임을 입력해주세요. (예: 30초, 최소 위력 4는 15초, 위력 5는 20초, 위력 6은 40초로 해주세요.)", "validator": lambda x: len(x) > 0, "error_message": "쿨타임을 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할퀴기나 주먹같은 단발 공격은 1초로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할GRAVE기나 주먹같은 단발 공격은 1초로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까?", "options": ["예", "아니요"], "error_message": "예 또는 아니요로 선택해주세요."},
     {"field": "과거사", "prompt": "과거사를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
@@ -394,10 +394,7 @@ async def process_flex_queue():
 
                 files = []
                 if answers.get("외모", "").startswith("이미지_"):
-                    image_url = answers["외모"].replace("이미지_", "")
-                    file = await download_image(image_url)
-                    if file:
-                        files.append(file)
+                    image_url = answers["외s3a5b9f9f5d4a7b4a8a2f6a8a1a0a8a7a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4 топлива
 
                 if pass_status:
                     allowed_roles, _ = await get_settings(guild.id)
@@ -461,82 +458,35 @@ async def process_flex_queue():
                                 f"관계: {answers.get('관계', '미기재')}"
                             )
 
-                            # 수정: 캐릭터-목록 채널 등록 로직 개선
+                            # 캐릭터-목록 채널 등록 로직 개선
                             char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
                             if not char_channel:
-                                print("캐릭터-목록 채널을 찾을 수 없습니다.")  # 디버깅 메시지
+                                print("캐릭터-목록 채널을 찾을 수 없습니다.")
                                 result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 서버 관리자에게 문의해~ 🥺"
                             else:
-                                print(f"캐릭터-목록 채널 발견: {char_channel.name} (ID: {char_channel.id})")  # 디버깅 메시지
+                                print(f"캐릭터-목록 채널 발견: {char_channel.name} (ID: {char_channel.id})")
                                 try:
                                     if isinstance(char_channel, discord.ForumChannel):
-                                        # 포럼 채널인 경우 스레드 생성/편집
-                                        if task["thread_id"]:
-                                            thread = bot.get_channel(int(task["thread_id"]))
-                                            if thread:
-                                                print(f"기존 스레드 발견: {thread.name} (ID: {thread.id})")  # 디버깅 메시지
-                                                messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
-                                                if messages:
-                                                    await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
-                                                    print("기존 스레드 편집 완료")  # 디버깅 메시지
-                                                else:
-                                                    print("기존 스레드 메시지 없음, 새 메시지 작성")  # 디버깅 메시지
-                                                    await thread.send(f"{member.mention}의 캐릭터:\n{formatted_description}", files=files)
-                                            else:
-                                                print("기존 스레드 ID 유효하지 않음, 새 스레드 생성")  # 디버깅 메시지
-                                                thread, new_thread_id = await send_message_with_retry(
-                                                    char_channel,
-                                                    f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                                    answers,
-                                                    post_name,
-                                                    files=files
-                                                )
-                                                task["thread_id"] = new_thread_id
-                                                print(f"새 스레드 생성: {new_thread_id}")  # 디버깅 메시지
-                                        else:
-                                            print("스레드 ID 없음, 새 스레드 생성")  # 디버깅 메시지
-                                            thread, new_thread_id = await send_message_with_retry(
-                                                char_channel,
-                                                f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                                answers,
-                                                post_name,
-                                                files=files
-                                            )
-                                            task["thread_id"] = new_thread_id
-                                            print(f"새 스레드 생성: {new_thread_id}")  # 디버깅 메시지
+                                        thread_name = f"캐릭터: {post_name}"
+                                        thread, new_thread_id = await send_message_with_retry(
+                                            char_channel,
+                                            f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                            answers,
+                                            post_name,
+                                            files=files
+                                        )
+                                        task["thread_id"] = new_thread_id
+                                        print(f"새 포럼 스레드 생성: {new_thread_id}")
                                     else:
-                                        # 일반 텍스트 채널인 경우 메시지 전송
-                                        if task["thread_id"]:
-                                            thread = bot.get_channel(int(task["thread_id"]))
-                                            if thread:
-                                                print(f"기존 메시지 채널 발견: {thread.name} (ID: {thread.id})")  # 디버깅 메시지
-                                                messages = [msg async for msg in thread.history(limit=1, oldest_first=True)]
-                                                if messages:
-                                                    await messages[0].edit(content=f"{member.mention}의 캐릭터:\n{formatted_description}", attachments=files if files else [])
-                                                    print("기존 메시지 편집 완료")  # 디버깅 메시지
-                                                else:
-                                                    print("기존 메시지 없음, 새 메시지 작성")  # 디버깅 메시지
-                                                    await thread.send(f"{member.mention}의 캐릭터:\n{formatted_description}", files=files)
-                                            else:
-                                                print("기존 메시지 채널 ID 유효하지 않음, 새 메시지 전송")  # 디버깅 메시지
-                                                message, _ = await send_message_with_retry(
-                                                    char_channel,
-                                                    f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                                    files=files
-                                                )
-                                                task["thread_id"] = str(message.id)
-                                                print(f"새 메시지 전송: {message.id}")  # 디버깅 메시지
-                                        else:
-                                            print("메시지 ID 없음, 새 메시지 전송")  # 디버깅 메시지
-                                            message, _ = await send_message_with_retry(
-                                                char_channel,
-                                                f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                                files=files
-                                            )
-                                            task["thread_id"] = str(message.id)
-                                            print(f"새 메시지 전송: {message.id}")  # 디버깅 메시지
+                                        message, _ = await send_message_with_retry(
+                                            char_channel,
+                                            f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                            files=files
+                                        )
+                                        task["thread_id"] = str(message.id)
+                                        print(f"새 메시지 전송: {message.id}")
                                 except Exception as e:
-                                    print(f"캐릭터-목록 채널 등록 중 오류: {str(e)}")  # 디버깅 메시지
+                                    print(f"캐릭터-목록 채널 등록 중 오류: {str(e)}")
                                     result += f"\n❌ 캐릭터-목록 채널 등록 중 오류 발생: {str(e)} 🥺"
                 else:
                     failed_fields = []
@@ -545,7 +495,7 @@ async def process_flex_queue():
                             failed_fields.append(field)
                     result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                # 수정: thread_id 저장
+                # thread_id 저장
                 await save_result(
                     task["character_id"],
                     task["description"],
@@ -564,7 +514,7 @@ async def process_flex_queue():
                 task["status"] = "completed"
 
             except Exception as e:
-                print(f"Flex 작업 처리 중 오류: {str(e)}")  # 디버깅 메시지
+                print(f"Flex 작업 처리 중 오류: {str(e)}")
                 await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
                 task["status"] = "failed"
         await asyncio.sleep(1)
@@ -802,7 +752,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             else:
                 await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
                 def check(m):
-                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    return m Must be logged in to view this content.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
                     response = await bot.wait_for(
                         "message",
