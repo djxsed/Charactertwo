@@ -351,73 +351,28 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                 raise e
     raise discord.HTTPException("최대 재시도 횟수 초과")
 
-async def process_flex_queue():
-    while True:
-        if flex_queue:
-            task_id = flex_queue.popleft()
-            task = flex_tasks.get(task_id)
-            if not task or task["status"] != "pending":
-                continue
+if pass_status:
+    allowed_roles, _ = await get_settings(guild.id)
+    if role_name and role_name not in allowed_roles:
+        result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
+    else:
+        has_role = False
+        role = discord.utils.get(guild.roles, name=role_name) if role_name else None
+        race_role = discord.utils.get(guild.roles, name=race) if race else None
+        if role and role in member.roles:
+            has_role = True
+        if race_role and race_role in member.roles:
+            has_role = True
 
-            try:
-                response = openai_client.chat.completions.create(
-                    model="gpt-4.1-nano",
-                    messages=[{"role": "user", "content": task["prompt"]}],
-                    max_tokens=50
-                )
-                result = response.choices[0].message.content.strip()
-                pass_status = result.startswith("✅")
-                role_name = result.split("역할: ")[1] if pass_status else None
-                reason = result[2:] if not pass_status else "통과"
-
-                answers = {}
-                for line in task["description"].split("\n"):
-                    if ": " in line:
-                        key, value = line.split(": ", 1)
-                        answers[key] = value
-                character_name = answers.get("이름")
-                race = answers.get("종족")
-                age = answers.get("나이")
-                gender = answers.get("성별")
-                post_name = answers.get("포스트 이름")
-
-                channel = bot.get_channel(int(task["channel_id"]))
-                guild = channel.guild
-                member = guild.get_member(int(task["user_id"]))
-
-                files = []
-                if answers.get("외모", "").startswith("이미지_"):
-                    image_url = answers["외모"].replace("이미지_", "")
-                    image_file = await download_image(image_url)
-                    if image_file:
-                        files.append(image_file)
-                    else:
-                        print(f"Failed to download image: {image_url}")
-
-                if pass_status:
-                    allowed_roles, _ = await get_settings(guild.id)
-                    if role_name and role:
-
-                        elif _name not in allowed_roles:
-                        result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
-                    else:
-                        has_role = False
-                        role = discord.utils.get(guild.roles, name=role_name) if role_name else None
-                        race_role = discord.utils.get(guild.roles, name=race) if race else None
-                        if role and role in member.roles:
-                            has_role = True
-                        if race_role and race_role in member.roles:
-                            has_role = True
-
-                        if has_role:
-                            result = "🎉 이미 역할이 있어! 마음껏 즐겨~ 🎊"
-                        else:
-                            if role:
-                                await member.add_roles(role)
-                                result += f" (역할 `{role_name}` 부여했어! 😊)"
-                            if race_role:
-                                await member.add_roles(race_role)
-                                result += f" (종족 `{race}` 부여했어! 😊)"
+        if has_role:
+            result = "🎉 이미 역할이 있어! 마음껏 즐겨~ 🎊"
+        else:
+            if role:
+                await member.add_roles(role)
+                result += f" (역할 `{role_name}` 부여했어! 😊)"
+            if race_role:
+                await member.add_roles(race_role)
+                result += f" (종족 `{race}` 부여했어! 😊)"
 
                             formatted_description = (
                                 f"이름: {answers.get('이름', '미기재')}\n"
