@@ -426,28 +426,44 @@ if pass_status:
                 await member.add_roles(race_role)
                 result += f" (종족 `{race}` 부여했어! 😊)"
 
-                            formatted_description = (
-                                f"이름: {answers.get('이름', '미기재')}\n"
-                                f"성별: {answers.get('성별', '미기재')}\n"
-                                f"종족: {answers.get('종족', '미기재')}\n"
-                                f"나이: {answers.get('나이', '미기재')}\n"
-                                f"소속: {answers.get('소속', '미기재')}\n"
-                            )
-                            if answers.get("소속") == "학생":
-                                formatted_description += f"학년 및 반: {answers.get('학년 및 반', '미기재')}\n"
-                            elif answers.get("소속") == "선생님":
-                                formatted_description += f"담당 과목 및 학년, 반: {answers.get('담당 과목 및 학년, 반', '미기재')}\n"
-                            formatted_description += "동아리: 미기재\n\n"
-                            formatted_description += (
-                                f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
-                                f"성격: {answers.get('성격', '미기재')}\n"
-                                f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) and not answers.get('외모').startswith('이미지_') else '이미지로 등록됨'}\n\n"
-                                f"체력: {answers.get('체력', '미기재')}\n"
-                                f"지능: {answers.get('지능', '미기재')}\n"
-                                f"이동속도: {answers.get('이동속도', '미기재')}\n"
-                                f"힘: {answers.get('힘', '미기재')}\n"
-                                f"냉철: {answers.get('냉철', '미기재')}\n"
-                            )
+            formatted_description = (
+                f"이름: {answers.get('이름', '미기재')}\n"
+                f"성별: {answers.get('성별', '미기재')}\n"
+                f"종족: {answers.get('종족', '미기재')}\n"
+                f"나이: {answers.get('나이', '미기재')}\n"
+                f"소속: {answers.get('소속', '미기재')}\n"
+            )
+            if answers.get("소속") == "학생":
+                formatted_description += f"학년 및 반: {answers.get('학년 및 반', '미기재')}\n"
+            elif answers.get("소속") == "선생님":
+                formatted_description += f"담당 과목 및 학년, 반: {answers.get('담당 과목 및 학년, 반', '미기재')}\n"
+            formatted_description += "동아리: 미기재\n\n"
+            formatted_description += (
+                f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
+                f"성격: {answers.get('성격', '미기재')}\n"
+                f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) and not answers.get('외모').startswith('이미지_') else '이미지로 등록됨'}\n\n"
+                f"체력: {answers.get('체력', '미기재')}\n"
+                f"지능: {answers.get('지능', '미기재')}\n"
+                f"이동속도: {answers.get('이동속도', '미기재')}\n"
+                f"힘: {answers.get('힘', '미기재')}\n"
+                f"냉철: {answers.get('냉철', '미기재')}\n"
+            )
+            techs = []
+            for i in range(6):
+                tech_name = answers.get(f"사용 기술/마법/요력_{i}")
+                if tech_name:
+                    tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
+                    tech_cooldown = answers.get(f"사용 기술/마법/요력 쿨타임_{i}", "미기재")
+                    tech_duration = answers.get(f"사용 기술/마법/요력 지속시간_{i}", "미기재")
+                    tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
+                    techs.append(f"<{tech_name}> (위력: {tech_power}, 쿨타임: {tech_cooldown}, 지속시간: {tech_duration})\n설명: {tech_desc}")
+            formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력:\n없음\n"
+            formatted_description += "\n"
+            formatted_description += (
+                f"과거사: {answers.get('과거사', '미기재')}\n"
+                f"특징: {answers.get('특징', '미기재')}\n\n"
+                f"관계: {answers.get('관계', '미기재')}"
+            )
                             techs = []
                             for i in range(6):
                                 tech_name = answers.get(f"사용 기술/마법/요력_{i}")
