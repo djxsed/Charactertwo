@@ -561,8 +561,13 @@ async def process_flex_queue():
                 member = guild.get_member(int(task["user_id"]))
 
                 files = []
-                if answers.get("외모", "").startswith("이미지_"):
-                    image_url = answers["외s3a5b9f9f5d4a7b4a8a2f6a8a1a0a8a7a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4a0a0a8a7a8a6a4 топлива
+                appearance = answers.get("외모", "")
+                if appearance.startswith("이미지_"):
+                    image_url = appearance[len("이미지_"):]  # "이미지_" 접두어를 제거하여 URL 추출
+                    if image_url:  # URL이 비어있지 않은지 확인
+                        file = await download_image(image_url)
+                        if file:
+                            files.append(file)
 
                 if pass_status:
                     allowed_roles, _ = await get_settings(guild.id)
@@ -625,6 +630,9 @@ async def process_flex_queue():
                                 f"특징: {answers.get('특징', '미기재')}\n\n"
                                 f"관계: {answers.get('관계', '미기재')}"
                             )
+            except Exception as e:
+                print(f"Error processing task {task_id}: {e}")
+                continue
 
                             # 캐릭터-목록 채널 등록 로직 개선
                             char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
