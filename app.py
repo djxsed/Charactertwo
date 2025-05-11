@@ -226,8 +226,15 @@ async def check_cooldown(user_id):
 # 추가 검증 함수
 def validate_all(answers):
     errors = []
-    race = answers["종족"]
-    attributes = [int(answers[attr]) for attr in ["체력", "지능", "이동속도", "힘", "냉철"]]
+    race = answers.get("종족")
+    attributes = []
+    for attr in ["체력", "지능", "이동속도", "힘", "냉철"]:
+        try:
+            value = int(answers.get(attr, 0))
+            attributes.append(value)
+        except (ValueError, TypeError):
+            errors.append(([attr], f"{attr}은 숫자여야 합니다."))
+            return errors
     attr_sum = sum(attributes)
     if race == "인간" and not (5 <= attr_sum <= 18):
         errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "인간의 속성 합계는 5~18이어야 합니다."))
@@ -240,28 +247,57 @@ def validate_all(answers):
     if tech_count > 6:
         errors.append((["사용 기술/마법/요력"], f"기술/마법/요력은 최대 6개까지 가능합니다. 현재 {tech_count}개."))
     
+    # 기술/마법/요력 쿨타임 및 지속 시간 검증
+    for i in range(tech_count):
+        power_field = f"사용 기술/마법/요력 위력_{i}"
+        cooldown_field = f"사용 기술/마법/요력 쿨타임_{i}"
+        duration_field = f"사용 기술/마법/요력 지속시간_{i}"
+        try:
+            power = int(answers.get(power_field, 0))
+            cooldown = answers.get(cooldown_field, "")
+            duration = answers.get(duration_field, "")
+            
+            # 쿨타임 검증
+            cooldown_value = float(re.findall(r"\d+", cooldown)[0]) if re.findall(r"\d+", cooldown) else 0
+            if power == 4 and cooldown_value < 15:
+                errors.append(([cooldown_field], "위력 4의 기술은 쿨타임이 15초 이상이어야 합니다."))
+            elif power == 5 and cooldown_value < 20:
+                errors.append(([cooldown_field], "위력 5의 기술은 쿨타임이 20초 이상이어야 합니다."))
+            elif power == 6 and cooldown_value < 40:
+                errors.append(([cooldown_field], "위력 6의 기술은 쿨타임이 40초 이상이어야 합니다."))
+            
+            # 지속 시간 검증
+            duration_value = float(re.findall(r"\d+", duration)[0]) if re.findall(r"\d+", duration) else 0
+            if duration_value > 39:
+                errors.append(([duration_field], "기술의 지속 시간은 39초를 초과할 수 없습니다."))
+        except (ValueError, IndexError):
+            errors.append(([power_field, cooldown_field, duration_field], "기술의 위력, 쿨타임, 지속 시간이 올바른 형식이 아닙니다."))
+    
     return errors
 
 # 캐릭터 심사 결과 저장
+character_storage_lock = asyncio.Lock()
+
 async def save_result(character_id, description, pass_status, reason, role_name, user_id, character_name, race, age, gender, thread_id, post_name):
-    description_hash = hashlib.md5(description.encode()).hexdigest()
-    timestamp = datetime.utcnow().isoformat()
-    character_storage[character_id] = {
-        "character_id": character_id,
-        "description_hash": description_hash,
-        "pass": pass_status,
-        "reason": reason,
-        "role_name": role_name,
-        "user_id": user_id,
-        "character_name": character_name,
-        "race": race,
-        "age": age,
-        "gender": gender,
-        "thread_id": thread_id,
-        "description": description,
-        "timestamp": timestamp,
-        "post_name": post_name
-    }
+    async with character_storage_lock:
+        description_hash = hashlib.md5(description.encode()).hexdigest()
+        timestamp = datetime.utcnow().isoformat()
+        character_storage[character_id] = {
+            "character_id": character_id,
+            "description_hash": description_hash,
+            "pass": pass_status,
+            "reason": reason,
+            "role_name": role_name,
+            "user_id": user_id,
+            "character_name": character_name,
+            "race": race,
+            "age": age,
+            "gender": gender,
+            "thread_id": thread_id,
+            "description": description,
+            "timestamp": timestamp,
+            "post_name": post_name
+        }
 
 # 캐릭터 심사 결과 조회
 async def get_result(description):
@@ -300,6 +336,8 @@ async def get_character_info(character_id):
     return None
 
 # Flex 작업 큐에 추가
+flex_queue_event = asyncio.Event()
+
 async def queue_flex_task(character_id, description, user_id, channel_id, thread_id, task_type, prompt):
     task_id = str(uuid.uuid4())
     created_at = datetime.utcnow().isoformat()
@@ -316,8 +354,19 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
         "created_at": created_at
     }
     flex_queue.append(task_id)
+    flex_queue_event.set()  # 새 작업 알림
     return task_id
 
+async def process_flex_queue():
+    while True:
+        if not flex_queue:
+            await flex_queue_event.wait()
+            flex_queue_event.clear()
+        task_id = flex_queue.popleft()
+        task = flex_tasks.get(task_id)
+        if not task or task["status"] != "pending":
+            continue
+            
 # 429 에러 재시도 로직
 async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
     files = files or []
@@ -327,7 +376,7 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
                 await interaction.followup.send(content, files=files, view=view)
                 return None, None
             elif isinstance(channel, discord.ForumChannel) and answers and post_name:
-                thread_name = f"캐릭터: {post_name}"[:100]  # 스레드 이름 길이 제한
+                thread_name = f"캐릭터: {post_name}"[:100]
                 thread = await channel.create_thread(
                     name=thread_name,
                     content=content,
@@ -340,16 +389,19 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
             else:
                 message = await channel.send(content, files=files, view=view)
                 print(f"Sent message to channel: {channel.name} (ID: {message.id})")
-                return message, str(message.id)  # TextChannel용 메시지 ID 반환
+                return message, str(message.id)
         except discord.HTTPException as e:
             if e.status == 429:
-                retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
+                retry_after = getattr(e, 'retry_after', 5.0)
                 print(f"429 Rate Limit Error, retrying after {retry_after} seconds...")
                 await asyncio.sleep(retry_after)
             else:
                 print(f"Error in send_message_with_retry: {str(e)}")
-                raise e
-    raise discord.HTTPException("최대 재시도 횟수 초과")
+                raise
+        except Exception as e:
+            print(f"Unexpected error in send_message_with_retry: {str(e)}")
+            raise
+    raise discord.HTTPException(response=None, message="최대 재시도 횟수 초과")
 
 if pass_status:
     allowed_roles, _ = await get_settings(guild.id)
@@ -475,11 +527,18 @@ if pass_status:
 
 # 이미지 다운로드 함수
 async def download_image(image_url):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(image_url) as response:
-            if response.status == 200:
-                content = await response.read()
-                return discord.File(fp=content, filename="appearance.png")
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(image_url, timeout=10) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    return discord.File(fp=io.BytesIO(content), filename="appearance.png")
+                else:
+                    print(f"Failed to download image: HTTP {response.status}")
+                    return None
+    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+        print(f"Error downloading image: {str(e)}")
+        return None
     return None
 
 # Flex 작업 처리
@@ -499,7 +558,7 @@ async def process_flex_queue():
                 )
                 result = response.choices[0].message.content.strip()
                 pass_status = result.startswith("✅")
-                role_name = result.split("역할: ")[1] if pass_status else None
+                role_name = result.split("역할: ")[1] if pass_status and "역할: " in result else None
                 reason = result[2:] if not pass_status else "통과"
 
                 answers = {}
@@ -520,16 +579,18 @@ async def process_flex_queue():
                 files = []
                 appearance = answers.get("외모", "")
                 if appearance.startswith("이미지_"):
-                    image_url = appearance[len("이미지_"):]  # "이미지_" 접두어를 제거하여 URL 추출
-                    if image_url:  # URL이 비어있지 않은지 확인
+                    image_url = appearance[len("이미지_"):]
+                    if image_url:
                         file = await download_image(image_url)
                         if file:
                             files.append(file)
 
+                result_message = ""
                 if pass_status:
                     allowed_roles, _ = await get_settings(guild.id)
                     if role_name and role_name not in allowed_roles:
-                        result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
+                        result_message = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
+                        pass_status = False
                     else:
                         has_role = False
                         role = discord.utils.get(guild.roles, name=role_name) if role_name else None
@@ -540,14 +601,14 @@ async def process_flex_queue():
                             has_role = True
 
                         if has_role:
-                            result = "🎉 이미 역할이 있어! 마음껏 즐겨~ 🎊"
+                            result_message = "🎉 이미 역할이 있어! 마음껏 즐겨~ 🎊"
                         else:
                             if role:
                                 await member.add_roles(role)
-                                result += f" (역할 `{role_name}` 부여했어! 😊)"
+                                result_message += f" (역할 `{role_name}` 부여했어! 😊)"
                             if race_role:
                                 await member.add_roles(race_role)
-                                result += f" (종족 `{race}` 부여했어! 😊)"
+                                result_message += f" (종족 `{race}` 부여했어! 😊)"
 
                             formatted_description = (
                                 f"이름: {answers.get('이름', '미기재')}\n"
@@ -587,48 +648,45 @@ async def process_flex_queue():
                                 f"특징: {answers.get('특징', '미기재')}\n\n"
                                 f"관계: {answers.get('관계', '미기재')}"
                             )
-            except Exception as e:
-                print(f"Error processing task {task_id}: {e}")
-                continue
 
-                            # 캐릭터-목록 채널 등록 로직 개선
+                            # 캐릭터-목록 채널 등록
                             char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
                             if not char_channel:
-                                print("캐릭터-목록 채널을 찾을 수 없습니다.")
-                                result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 서버 관리자에게 문의해~ 🥺"
+                                print("Error: 캐릭터-목록 채널을 찾을 수 없습니다.")
+                                result_message += "\n❌ 캐릭터-목록 채널을 못 찾았어! 서버 관리자에게 문의해~ 🥺"
                             else:
-                                print(f"캐릭터-목록 채널 발견: {char_channel.name} (ID: {char_channel.id})")
+                                print(f"Found 캐릭터-목록 channel: {char_channel.name} (ID: {char_channel.id}, Type: {type(char_channel).__name__})")
                                 try:
                                     if isinstance(char_channel, discord.ForumChannel):
-                                        thread_name = f"캐릭터: {post_name}"
+                                        thread_name = f"캐릭터: {post_name}"[:100]
                                         thread, new_thread_id = await send_message_with_retry(
                                             char_channel,
                                             f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                            answers,
-                                            post_name,
+                                            answers=answers,
+                                            post_name=post_name,
                                             files=files
                                         )
                                         task["thread_id"] = new_thread_id
-                                        print(f"새 포럼 스레드 생성: {new_thread_id}")
+                                        print(f"Posted to ForumChannel thread: {new_thread_id}")
                                     else:
-                                        message, _ = await send_message_with_retry(
+                                        message, message_id = await send_message_with_retry(
                                             char_channel,
                                             f"{member.mention}의 캐릭터:\n{formatted_description}",
                                             files=files
                                         )
-                                        task["thread_id"] = str(message.id)
-                                        print(f"새 메시지 전송: {message.id}")
+                                        task["thread_id"] = message_id
+                                        print(f"Posted to TextChannel message: {message_id}")
                                 except Exception as e:
-                                    print(f"캐릭터-목록 채널 등록 중 오류: {str(e)}")
-                                    result += f"\n❌ 캐릭터-목록 채널 등록 중 오류 발생: {str(e)} 🥺"
+                                    print(f"Error posting to 캐릭터-목록 channel: {str(e)}")
+                                    result_message += f"\n❌ 캐릭터-목록 채널 등록 중 오류: {str(e)} 🥺"
                 else:
                     failed_fields = []
                     for field in answers:
                         if field in reason:
                             failed_fields.append(field)
-                    result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
+                    result_message += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-                # thread_id 저장
+                # 결과 저장
                 await save_result(
                     task["character_id"],
                     task["description"],
@@ -643,11 +701,11 @@ async def process_flex_queue():
                     task["thread_id"],
                     post_name
                 )
-                await send_message_with_retry(channel, f"{member.mention} {result}")
+                await send_message_with_retry(channel, f"{member.mention} {result_message}")
                 task["status"] = "completed"
 
             except Exception as e:
-                print(f"Flex 작업 처리 중 오류: {str(e)}")
+                print(f"Error processing flex task: {str(e)}")
                 await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
                 task["status"] = "failed"
         await asyncio.sleep(1)
@@ -660,10 +718,29 @@ class SelectionView(discord.ui.View):
         self.field = field
         self.user = user
         self.callback = callback
+        self.message = None
         for option in options:
             button = discord.ui.Button(label=option, style=discord.ButtonStyle.primary)
             button.callback = self.create_button_callback(option)
             self.add_item(button)
+
+    def create_button_callback(self, option):
+        async def button_callback(interaction: discord.Interaction):
+            if interaction.user != self.user:
+                await interaction.response.send_message("이 버튼은 당신이 사용할 수 없어요!", ephemeral=True)
+                return
+            await interaction.response.send_message(f"{option}을(를) 선택했어!", ephemeral=True)
+            await self.callback(option)
+            self.stop()
+        return button_callback
+
+    async def on_timeout(self):
+        if self.message:
+            await self.message.channel.send(f"{self.user.mention} ❌ 10분 동안 응답이 없어 신청이 취소됐어요. /캐릭터_신청 명령어로 다시 시도해주세요! 🥹")
+        else:
+            channel = bot.get_channel(self.user.dm_channel.id if self.user.dm_channel else self.user.id)
+            if channel:
+                await channel.send(f"{self.user.mention} ❌ 10분 동안 응답이 없어 신청이 취소됐어요. /캐릭터_신청 명령어로 다시 시도해주세요! 🥹")
 
     def create_button_callback(self, option):
         async def button_callback(interaction: discord.Interaction):
@@ -885,7 +962,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
             else:
                 await send_message_with_retry(channel, f"{user.mention} {question['field']}을 수정해: {question['prompt']}")
                 def check(m):
-                    return m Must be logged in to view this content.author == user and m.channel == channel and (m.content.strip() or m.attachments)
+                    return m.author == user and m.channel == channel and (m.content.strip() or m.attachments)
                 try:
                     response = await bot.wait_for(
                         "message",
@@ -904,7 +981,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                 except asyncio.TimeoutError:
                     await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                     return
-
+                    
     if any("사용 기술/마법/요력" in EDITABLE_FIELDS[i] for i in selected_indices):
         techs = [(k, answers[k], answers.get(f"사용 기술/마법/요력 위력_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 쿨타임_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 지속시간_{k.split('_')[1]}"), answers.get(f"사용 기술/마법/요력 설명_{k.split('_')[1]}"))
                  for k in sorted([k for k in answers if k.startswith("사용 기술/마법/요력_")], key=lambda x: int(x.split('_')[1]))]
