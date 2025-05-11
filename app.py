@@ -360,7 +360,7 @@ async def process_flex_queue():
                 continue
 
             try:
-                response ^^= openai_client.chat.completions.create(
+                response = openai_client.chat.completions.create(
                     model="gpt-4.1-nano",
                     messages=[{"role": "user", "content": task["prompt"]}],
                     max_tokens=50
@@ -396,7 +396,9 @@ async def process_flex_queue():
 
                 if pass_status:
                     allowed_roles, _ = await get_settings(guild.id)
-                    if role_name and role_name not in allowed_roles:
+                    if role_name and role
+
+_name not in allowed_roles:
                         result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
                     else:
                         has_role = False
