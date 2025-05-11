@@ -326,27 +326,195 @@ async def send_message_with_retry(channel, content, answers=None, post_name=None
             if is_interaction and interaction:
                 await interaction.followup.send(content, files=files, view=view)
                 return None, None
-            elif isinstance(channel, discord.ForumChannel) and answers:
-                thread_name = f"캐릭터: {post_name}"
+            elif isinstance(channel, discord.ForumChannel) and answers and post_name:
+                thread_name = f"캐릭터: {post_name}"[:100]  # 스레드 이름 길이 제한
                 thread = await channel.create_thread(
                     name=thread_name,
                     content=content,
                     auto_archive_duration=10080,
                     files=files
                 )
-                thread_id = str(thread.thread.id) if hasattr(thread, 'thread') else str(thread.id)
+                thread_id = str(thread.thread.id)
+                print(f"Created thread in ForumChannel: {thread_name} (ID: {thread_id})")
                 return thread, thread_id
             else:
                 message = await channel.send(content, files=files, view=view)
-                return message, None
+                print(f"Sent message to channel: {channel.name} (ID: {message.id})")
+                return message, str(message.id)  # TextChannel용 메시지 ID 반환
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = e.retry_after if hasattr(e, 'retry_after') else 5
-                print(f"429 에러 발생, {retry_after}초 후 재시도...")
+                print(f"429 Rate Limit Error, retrying after {retry_after} seconds...")
                 await asyncio.sleep(retry_after)
             else:
+                print(f"Error in send_message_with_retry: {str(e)}")
                 raise e
     raise discord.HTTPException("최대 재시도 횟수 초과")
+
+async def process_flex_queue():
+    while True:
+        if flex_queue:
+            task_id = flex_queue.popleft()
+            task = flex_tasks.get(task_id)
+            if not task or task["status"] != "pending":
+                continue
+
+            try:
+                response ^^= openai_client.chat.completions.create(
+                    model="gpt-4.1-nano",
+                    messages=[{"role": "user", "content": task["prompt"]}],
+                    max_tokens=50
+                )
+                result = response.choices[0].message.content.strip()
+                pass_status = result.startswith("✅")
+                role_name = result.split("역할: ")[1] if pass_status else None
+                reason = result[2:] if not pass_status else "통과"
+
+                answers = {}
+                for line in task["description"].split("\n"):
+                    if ": " in line:
+                        key, value = line.split(": ", 1)
+                        answers[key] = value
+                character_name = answers.get("이름")
+                race = answers.get("종족")
+                age = answers.get("나이")
+                gender = answers.get("성별")
+                post_name = answers.get("포스트 이름")
+
+                channel = bot.get_channel(int(task["channel_id"]))
+                guild = channel.guild
+                member = guild.get_member(int(task["user_id"]))
+
+                files = []
+                if answers.get("외모", "").startswith("이미지_"):
+                    image_url = answers["외모"].replace("이미지_", "")
+                    image_file = await download_image(image_url)
+                    if image_file:
+                        files.append(image_file)
+                    else:
+                        print(f"Failed to download image: {image_url}")
+
+                if pass_status:
+                    allowed_roles, _ = await get_settings(guild.id)
+                    if role_name and role_name not in allowed_roles:
+                        result = f"❌ 역할 `{role_name}`은 허용되지 않아! 허용된 역할: {', '.join(allowed_roles)} 🤔"
+                    else:
+                        has_role = False
+                        role = discord.utils.get(guild.roles, name=role_name) if role_name else None
+                        race_role = discord.utils.get(guild.roles, name=race) if race else None
+                        if role and role in member.roles:
+                            has_role = True
+                        if race_role and race_role in member.roles:
+                            has_role = True
+
+                        if has_role:
+                            result = "🎉 이미 역할이 있어! 마음껏 즐겨~ 🎊"
+                        else:
+                            if role:
+                                await member.add_roles(role)
+                                result += f" (역할 `{role_name}` 부여했어! 😊)"
+                            if race_role:
+                                await member.add_roles(race_role)
+                                result += f" (종족 `{race}` 부여했어! 😊)"
+
+                            formatted_description = (
+                                f"이름: {answers.get('이름', '미기재')}\n"
+                                f"성별: {answers.get('성별', '미기재')}\n"
+                                f"종족: {answers.get('종족', '미기재')}\n"
+                                f"나이: {answers.get('나이', '미기재')}\n"
+                                f"소속: {answers.get('소속', '미기재')}\n"
+                            )
+                            if answers.get("소속") == "학생":
+                                formatted_description += f"학년 및 반: {answers.get('학년 및 반', '미기재')}\n"
+                            elif answers.get("소속") == "선생님":
+                                formatted_description += f"담당 과목 및 학년, 반: {answers.get('담당 과목 및 학년, 반', '미기재')}\n"
+                            formatted_description += "동아리: 미기재\n\n"
+                            formatted_description += (
+                                f"키/몸무게: {answers.get('키/몸무게', '미기재')}\n"
+                                f"성격: {answers.get('성격', '미기재')}\n"
+                                f"외모: {answers.get('외모', '미기재') if isinstance(answers.get('외모'), str) and not answers.get('외모').startswith('이미지_') else '이미지로 등록됨'}\n\n"
+                                f"체력: {answers.get('체력', '미기재')}\n"
+                                f"지능: {answers.get('지능', '미기재')}\n"
+                                f"이동속도: {answers.get('이동속도', '미기재')}\n"
+                                f"힘: {answers.get('힘', '미기재')}\n"
+                                f"냉철: {answers.get('냉철', '미기재')}\n"
+                            )
+                            techs = []
+                            for i in range(6):
+                                tech_name = answers.get(f"사용 기술/마법/요력_{i}")
+                                if tech_name:
+                                    tech_power = answers.get(f"사용 기술/마법/요력 위력_{i}", "미기재")
+                                    tech_cooldown = answers.get(f"사용 기술/마법/요력 쿨타임_{i}", "미기재")
+                                    tech_duration = answers.get(f"사용 기술/마법/요력 지속시간_{i}", "미기재")
+                                    tech_desc = answers.get(f"사용 기술/마법/요력 설명_{i}", "미기재")
+                                    techs.append(f"<{tech_name}> (위력: {tech_power}, 쿨타임: {tech_cooldown}, 지속시간: {tech_duration})\n설명: {tech_desc}")
+                            formatted_description += "사용 기술/마법/요력:\n" + "\n\n".join(techs) + "\n" if techs else "사용 기술/마법/요력:\n없음\n"
+                            formatted_description += "\n"
+                            formatted_description += (
+                                f"과거사: {answers.get('과거사', '미기재')}\n"
+                                f"특징: {answers.get('특징', '미기재')}\n\n"
+                                f"관계: {answers.get('관계', '미기재')}"
+                            )
+
+                            # 캐릭터-목록 채널 등록
+                            char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
+                            if not char_channel:
+                                print("Error: 캐릭터-목록 채널을 찾을 수 없습니다.")
+                                result += "\n❌ 캐릭터-목록 채널을 못 찾았어! 서버 관리자에게 문의해~ 🥺"
+                            else:
+                                print(f"Found 캐릭터-목록 channel: {char_channel.name} (ID: {char_channel.id}, Type: {type(char_channel).__name__})")
+                                try:
+                                    if isinstance(char_channel, discord.ForumChannel):
+                                        thread, new_thread_id = await send_message_with_retry(
+                                            char_channel,
+                                            f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                            answers=answers,
+                                            post_name=post_name,
+                                            files=files
+                                        )
+                                        task["thread_id"] = new_thread_id
+                                        print(f"Posted to ForumChannel thread: {new_thread_id}")
+                                    else:
+                                        message, message_id = await send_message_with_retry(
+                                            char_channel,
+                                            f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                            files=files
+                                        )
+                                        task["thread_id"] = message_id
+                                        print(f"Posted to TextChannel message: {message_id}")
+                                except Exception as e:
+                                    print(f"Error posting to 캐릭터-목록 channel: {str(e)}")
+                                    result += f"\n❌ 캐릭터-목록 채널 등록 중 오류: {str(e)} 🥺"
+                else:
+                    failed_fields = []
+                    for field in answers:
+                        if field in reason:
+                            failed_fields.append(field)
+                    result += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
+
+                # 결과 저장
+                await save_result(
+                    task["character_id"],
+                    task["description"],
+                    pass_status,
+                    reason,
+                    role_name,
+                    task["user_id"],
+                    character_name,
+                    race,
+                    age,
+                    gender,
+                    task["thread_id"],
+                    post_name
+                )
+                await send_message_with_retry(channel, f"{member.mention} {result}")
+                task["status"] = "completed"
+
+            except Exception as e:
+                print(f"Error processing flex task: {str(e)}")
+                await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+                task["status"] = "failed"
+        await asyncio.sleep(1)
 
 # 이미지 다운로드 함수
 async def download_image(image_url):
