@@ -162,7 +162,7 @@ questions = [
     {"field": "사용 기술/마법/요력", "prompt": "사용 기술/마법/요력의 이름을 입력해주세요.", "validator": lambda x: len(x) > 0, "error_message": "사용 기술/마법/요력을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 위력", "prompt": "사용 기술/마법/요력의 위력을 선택해주세요.", "options": ["1", "2", "3", "4", "5", "6"], "error_message": "위력은 1에서 6 사이의 숫자여야 합니다.", "is_tech": True},
     {"field": "사용 기술/마법/요력 쿨타임", "prompt": "사용 기술/마법/요력의 쿨타임을 입력해주세요. (예: 30초, 최소 위력 4는 15초, 위력 5는 20초, 위력 6은 40초로 해주세요.)", "validator": lambda x: len(x) > 0, "error_message": "쿨타임을 입력해주세요.", "is_tech": True},
-    {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할GRAVE기나 주먹같은 단발 공격은 1초로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
+    {"field": "사용 기술/마법/요력 지속시간", "prompt": "사용 기술/마법/요력의 지속시간을 입력해주세요. (예: 10초, 할퀴기나 주먹같은 단발 공격은 1초로 해주세요)", "validator": lambda x: len(x) > 0, "error_message": "지속시간을 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 설명", "prompt": "사용 기술/마법/요력을 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "설명이 너무 짧습니다. 최소 20자 이상 입력해주세요.", "is_tech": True},
     {"field": "사용 기술/마법/요력 추가 여부", "prompt": "기술/마법/요력을 추가하시겠습니까?", "options": ["예", "아니요"], "error_message": "예 또는 아니요로 선택해주세요."},
     {"field": "과거사", "prompt": "과거사를 설명해주세요. (최소 20자)", "validator": lambda x: len(x) >= 20, "error_message": "과거사 설명이 너무 짧습니다. 최소 20자 이상 입력해주세요."},
