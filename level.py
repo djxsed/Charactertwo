@@ -11,6 +11,8 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다운
 
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+
 # 데이터베이스 초기화
 async def init_db():
     async with aiosqlite.connect('users.db') as db:
@@ -114,4 +116,4 @@ async def leaderboard(ctx):
 
 # 봇 실행
 import os
-bot.run(os.getenv('DISCORD_TOKEN'))
+bot.run(DISCORD_TOKEN)
