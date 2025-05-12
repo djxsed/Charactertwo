@@ -1,5 +1,8 @@
 import discord
 from discord.ext import commands
+import aiosqlite
+import asyncio
+from discord.ext.commands import CooldownMapping, BucketType
 import os
 import re
 from openai import OpenAI
@@ -7,7 +10,6 @@ from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import hashlib
 import uuid
-import asyncio
 from collections import deque
 from flask import Flask
 import threading
@@ -34,7 +36,140 @@ intents = discord.Intents.default()
 intents.guilds = True
 intents.members = True
 intents.message_content = True
-bot = commands.Bot(command_prefix="/", intents=intents)
+bot = commands.Bot(command_prefix='/', intents=intents)
+cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다운
+
+# --- 첫 번째 스크립트: 레벨링 시스템 ---
+
+# 데이터베이스 초기화
+async def init_db():
+    async with aiosqlite.connect('users.db') as db:
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                guild_id INTEGER,
+                xp INTEGER DEFAULT 0,
+                level INTEGER DEFAULT 1
+            )
+        ''')
+        await db.commit()
+
+# 경험치와 레벨 계산
+def get_level_xp(level):
+    return level * 100  # 레벨당 필요한 경험치
+
+async def add_xp(user_id, guild_id, xp, channel=None):
+    async with aiosqlite.connect('users.db') as db:
+        cursor = await db.execute('SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?', (user_id, guild_id))
+        row = await cursor.fetchone()
+        
+        if row is None:
+            await db.execute('INSERT INTO users (user_id, guild_id, xp, level) VALUES (?, ?, ?, 1)', (user_id, guild_id, xp))
+            await db.commit()
+            return 1, xp
+        
+        current_xp, current_level = row
+        new_xp = current_xp + xp
+        new_level = current_level
+        
+        # 레벨업 확인
+        while new_xp >= get_level_xp(new_level) and new_level < 30:
+            new_xp -= get_level_xp(new_level)
+            new_level += 1
+            if channel and new_level > current_level:
+                levelup_channel = discord.utils.get(channel.guild.channels, name="레벨업")
+                if levelup_channel:
+                    user = channel.guild.get_member(user_id)
+                    await levelup_channel.send(f'{user.mention}님이 레벨 {new_level}로 올라갔어요!')
+        
+        new_xp = max(0, new_xp)
+        
+        await db.execute('UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?', (new_xp, new_level, user_id, guild_id))
+        await db.commit()
+        
+        return new_level, new_xp
+
+# 메시지 처리
+@bot.event
+async def on_message(message):
+    if message.author.bot or not message.guild:
+        return
+    
+    # 쿨다운 체크
+    bucket = cooldown.get_bucket(message)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        return
+    
+    # 글자 수로 경험치 계산 (공백 포함)
+    xp = len(message.content)
+    if xp > 0:
+        await add_xp(message.author.id, message.guild.id, xp, message.channel)
+    
+    await bot.process_commands(message)
+
+# 레벨 확인 명령어
+@bot.command(name="레벨")
+async def level(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    async with aiosqlite.connect('users.db') as db:
+        cursor = await db.execute('SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?', (member.id, ctx.guild.id))
+        row = await cursor.fetchone()
+        
+        if row is None:
+            await ctx.send(f'{member.display_name}님은 아직 경험치가 없어요!')
+        else:
+            xp, level = row
+            await ctx.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
+
+# 리더보드 명령어
+@bot.command(name="리더보드")
+async def leaderboard(ctx):
+    async with aiosqlite.connect('users.db') as db:
+        cursor = await db.execute('SELECT user_id, xp, level FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5', (ctx.guild.id,))
+        rows = await cursor.fetchall()
+        
+        if not rows:
+            await ctx.send('아직 리더보드에 데이터가 없어요!')
+            return
+        
+        embed = discord.Embed(title=f"{ctx.guild.name} 리더보드", color=discord.Color.blue())
+        for i, (user_id, xp, level) in enumerate(rows, 1):
+            user = ctx.guild.get_member(user_id)
+            if user:
+                embed.add_field(name=f"{i}. {user.display_name}", value=f"레벨 {level} | XP: {xp}/{get_level_xp(level)}", inline=False)
+        
+        await ctx.send(embed=embed)
+
+# 경험치 추가 명령어 (관리실 전용)
+@bot.command(name="경험치추가")
+async def add_xp_command(ctx, member: discord.Member, xp: int):
+    if ctx.channel.name != "관리실":
+        await ctx.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!")
+        return
+    
+    if xp <= 0:
+        await ctx.send("추가할 경험치는 양수여야 합니다!")
+        return
+        
+    new_level, new_xp = await add_xp(member.id, ctx.guild.id, xp, ctx.channel)
+    await ctx.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+
+# 경험치 제거 명령어 (관리실 전용)
+@bot.command(name="경험치제거")
+async def remove_xp_command(ctx, member: discord.Member, xp: int):
+    if ctx.channel.name != "관리실":
+        await ctx.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!")
+        return
+    
+    if xp <= 0:
+        await ctx.send("제거할 경험치는 양수여야 합니다!")
+        return
+        
+    new_level, new_xp = await add_xp(member.id, ctx.guild.id, -xp, ctx.channel)
+    await ctx.send(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+
+# --- 두 번째 스크립트: 캐릭터 심사 시스템 ---
 
 # 상수 정의
 BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
@@ -175,9 +310,9 @@ EDITABLE_FIELDS = [q["field"] for q in questions if q["field"] != "사용 기술
 
 # 메모리 내 저장소
 flex_queue = deque()
-character_storage = {}  # 캐릭터 데이터 저장
-cooldown_storage = {}  # 쿨다운 데이터 저장
-flex_tasks = {}  # Flex 작업 저장
+character_storage = {}
+cooldown_storage = {}
+flex_tasks = {}
 
 # 서버별 설정 조회
 async def get_settings(guild_id):
@@ -248,7 +383,6 @@ def validate_all(answers):
     if tech_count > 6:
         errors.append((["사용 기술/마법/요력"], f"기술/마법/요력은 최대 6개까지 가능합니다. 현재 {tech_count}개."))
     
-    # 기술/마법/요력 쿨타임 및 지속 시간 검증
     for i in range(tech_count):
         power_field = f"사용 기술/마법/요력 위력_{i}"
         cooldown_field = f"사용 기술/마법/요력 쿨타임_{i}"
@@ -258,7 +392,6 @@ def validate_all(answers):
             cooldown = answers.get(cooldown_field, "")
             duration = answers.get(duration_field, "")
             
-            # 쿨타임 검증
             cooldown_value = float(re.findall(r"\d+", cooldown)[0]) if re.findall(r"\d+", cooldown) else 0
             if power == 4 and cooldown_value < 15:
                 errors.append(([cooldown_field], "위력 4의 기술은 쿨타임이 15초 이상이어야 합니다."))
@@ -267,7 +400,6 @@ def validate_all(answers):
             elif power == 6 and cooldown_value < 40:
                 errors.append(([cooldown_field], "위력 6의 기술은 쿨타임이 40초 이상이어야 합니다."))
             
-            # 지속 시간 검증
             duration_value = float(re.findall(r"\d+", duration)[0]) if re.findall(r"\d+", duration) else 0
             if duration_value > 39:
                 errors.append(([duration_field], "기술의 지속 시간은 39초를 초과할 수 없습니다."))
@@ -308,7 +440,7 @@ async def get_result(description):
             return char["pass"], char["reason"], char["role_name"]
     return None
 
-# 사용자별 캐릭터 조회 (대소문자 구분 없이)
+# 사용자별 캐릭터 조회
 async def find_characters_by_post_name(post_name, user_id):
     result = []
     for char in character_storage.values():
@@ -355,7 +487,7 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
         "created_at": created_at
     }
     flex_queue.append(task_id)
-    flex_queue_event.set()  # 새 작업 알림
+    flex_queue_event.set()
     return task_id
 
 # 429 에러 재시도 로직
@@ -508,7 +640,6 @@ async def process_flex_queue():
                             f"관계: {answers.get('관계', '미기재')}"
                         )
 
-                        # 캐릭터-목록 채널 등록
                         char_channel = discord.utils.get(guild.channels, name="캐릭터-목록")
                         if not char_channel:
                             print("Error: 캐릭터-목록 채널을 찾을 수 없습니다.")
@@ -545,7 +676,6 @@ async def process_flex_queue():
                         failed_fields.append(field)
                 result_message += f"\n다시 입력해야 할 항목: {', '.join(failed_fields) if failed_fields else '알 수 없음'}"
 
-            # 결과 저장
             await save_result(
                 task["character_id"],
                 task["description"],
@@ -619,7 +749,6 @@ async def character_apply(interaction: discord.Interaction):
         nonlocal answers
         answers[field] = option
 
-    # 비기술 질문 먼저 처리
     for question in questions:
         if not question.get("is_tech") and question["field"] != "사용 기술/마법/요력 추가 여부":
             if question.get("condition") and not question["condition"](answers):
@@ -652,7 +781,6 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 신청 취소됐어! 다시 시도해~ 🥹")
                         return
 
-    # 기술 질문 처리
     tech_counter = 0
     while tech_counter < 6:
         for tech_question in questions:
@@ -691,7 +819,6 @@ async def character_apply(interaction: discord.Interaction):
                 break
         tech_counter += 1
 
-    # 검증
     while True:
         errors = validate_all(answers)
         if not errors:
@@ -732,7 +859,6 @@ async def character_apply(interaction: discord.Interaction):
                         await send_message_with_retry(channel, f"{user.mention} ❌ 5분 내로 답변 안 해서 수정 취소됐어! 다시 시도해~ 🥹")
                         return
 
-    # AI 심사 준비
     description = "\n".join([f"{field}: {answers[field]}" for field in answers if field != "외모"])
     allowed_roles, _ = await get_settings(interaction.guild.id)
     prompt = DEFAULT_PROMPT.format(
@@ -740,6 +866,8 @@ async def character_apply(interaction: discord.Interaction):
         required_fields=', '.join(REQUIRED_FIELDS),
         allowed_races=', '.join(DEFAULT_ALLOWED_RACES),
         allowed_roles=', '.join(allowed_roles),
+
+
         description=description
     )
     character_id = str(uuid.uuid4())
@@ -886,7 +1014,7 @@ async def character_edit(interaction: discord.Interaction, post_name: str):
                             field = f"{tech_question['field']}_{tech_counter}"
                             if tech_question.get("options"):
                                 view = SelectionView(tech_question["options"], field, user, lambda option: handle_selection(field, option))
-                                message, _ = await send_message_with_retry(channel, f"{user.mention} {tech_question['prompt']}", view=view)
+                                message, _ = await send_message_with_retry(channel, f"{tech_question['prompt']}", view=view)
                                 view.message = message
                                 await view.wait()
                                 if field not in answers:
@@ -1007,6 +1135,7 @@ async def character_list(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f'봇이 로그인했어: {bot.user}')
+    await init_db()
     await bot.tree.sync()
     bot.loop.create_task(process_flex_queue())
 
