@@ -274,7 +274,7 @@ DEFAULT_PROMPT = """
 - 만약 종족이 요괴인데 AML이면 안된다.(과거사나 특징에서 요괴 정체를 숨기고 있는 것이라면 통과).
 - 만약 기술/마법/요력이 장비 혹은 무기라면 지속 시간과 쿨타임이 양식을 어긋나도 통과.
 - 키/몸무게에 cm/kg 단위가 없어도 cm/kg으로 해석.(예:180/80,180cm/80kg)
-- 키/몸무게에 300m 이상의 키와 10000kg 이상의 몸무게는 안된다.
+- 키/몸무게에 100m 이상의 키와 100000kg(혹은 100t) 이상의 몸무게는 안된다.
 - 학년 및 반은 학년별로 3반이 최대이다.
 - 종족 중 요괴는 소속의 학생과 선생님은 가능하다.
 - 소속이 AML을 제외하면 학생과 선생님은 종족을 제외하면 학교 관련 캐릭터만 통과지만 학교 관련 캐릭터가 아닌 소속의 직접적 묘사가 없으면 통과.(군인이나 특수부대 등은 불가)
@@ -689,23 +689,23 @@ async def process_flex_queue():
                         else:
                             print(f"Found 캐릭터-목록 channel: {char_channel.name} (ID: {char_channel.id}, Type: {type(char_channel).__name__})")
                             try:
-if isinstance(char_channel, discord.ForumChannel):
-    thread_name = f"캐릭터: {post_name}"[:100]
-    thread, message = await char_channel.create_thread(
-        name=thread_name,
-        content=f"{member.mention}의 캐릭터:\n{formatted_description}",
-        files=files
-    )
-    task["thread_id"] = str(thread.id)
-    print(f"Posted to ForumChannel thread: {thread.id}")
-else:
-    message = await send_message_with_retry(
-        char_channel,
-        f"{member.mention}의 캐릭터:\n{formatted_description}",
-        files=files
-    )
-    task["thread_id"] = str(message.id)
-    print(f"Posted to TextChannel message: {message.id}")
+                                if isinstance(char_channel, discord.ForumChannel):
+                                    thread_name = f"캐릭터: {post_name}"[:100]
+                                    thread, message = await char_channel.create_thread(
+                                        name=thread_name,
+                                        content=f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                        files=files
+                                    )
+                                    task["thread_id"] = str(thread.id)
+                                    print(f"Posted to ForumChannel thread: {thread.id}")
+                                else:
+                                    message = await send_message_with_retry(
+                                        char_channel,
+                                        f"{member.mention}의 캐릭터:\n{formatted_description}",
+                                        files=files
+                                    )
+                                    task["thread_id"] = str(message.id)
+                                    print(f"Posted to TextChannel message: {message.id}")
                             except Exception as e:
                                 print(f"Error posting to 캐릭터-목록 channel: {str(e)}")
                                 result_message += f"\n❌ 캐릭터-목록 채널 등록 중 오류: {str(e)} 🥺"
@@ -906,8 +906,6 @@ async def character_apply(interaction: discord.Interaction):
         required_fields=', '.join(REQUIRED_FIELDS),
         allowed_races=', '.join(DEFAULT_ALLOWED_RACES),
         allowed_roles=', '.join(allowed_roles),
-
-
         description=description
     )
     character_id = str(uuid.uuid4())
