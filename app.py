@@ -117,25 +117,28 @@ async def on_message(message):
 # 레벨 확인 명령어
 @bot.tree.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
 async def level(interaction: discord.Interaction, member: discord.Member = None):
+    await interaction.response.defer()  # 응답 지연 처리
     member = member or interaction.user
     async with aiosqlite.connect('users.db') as db:
         cursor = await db.execute('SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?', (member.id, interaction.guild.id))
         row = await cursor.fetchone()
         
         if row is None:
-            await interaction.response.send_message(f'{member.display_name}님은 아직 경험치가 없어요!')
+            await interaction.followup.send(f'{member.display_name}님은 아직 경험치가 없어요!')
         else:
             xp, level = row
-            await interaction.response.send_message(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
+            await interaction.followup.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
+# 리더보드 명령어
 @bot.tree.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
 async def leaderboard(interaction: discord.Interaction):
+    await interaction.response.defer()  # 응답 지연 처리
     async with aiosqlite.connect('users.db') as db:
         cursor = await db.execute('SELECT user_id, xp, level FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5', (interaction.guild.id,))
         rows = await cursor.fetchall()
         
         if not rows:
-            await interaction.response.send_message('아직 리더보드에 데이터가 없어요!')
+            await interaction.followup.send('아직 리더보드에 데이터가 없어요!')
             return
         
         embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
@@ -144,33 +147,39 @@ async def leaderboard(interaction: discord.Interaction):
             if user:
                 embed.add_field(name=f"{i}. {user.display_name}", value=f"레벨 {level} | XP: {xp}/{get_level_xp(level)}", inline=False)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.followup.send(embed=embed)
 
+# 경험치 추가 명령어 (관리자 전용)
 @bot.tree.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
+@commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
+    await interaction.response.defer()  # 응답 지연 처리
     if interaction.channel.name != "관리실":
-        await interaction.response.send_message("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+        await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
     
     if xp <= 0:
-        await interaction.response.send_message("추가할 경험치는 양수여야 합니다!", ephemeral=True)
+        await interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True)
         return
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel)
-    await interaction.response.send_message(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    await interaction.followup.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
+# 경험치 제거 명령어 (관리자 전용)
 @bot.tree.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
+@commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
+    await interaction.response.defer()  # 응답 지연 처리
     if interaction.channel.name != "관리실":
-        await interaction.response.send_message("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+        await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
     
     if xp <= 0:
-        await interaction.response.send_message("제거할 경험치는 양수여야 합니다!", ephemeral=True)
+        await interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True)
         return
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel)
-    await interaction.response.send_message(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    await interaction.followup.send(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # --- 두 번째 스크립트: 캐릭터 심사 시스템 ---
 
@@ -1139,7 +1148,11 @@ async def character_list(interaction: discord.Interaction):
 async def on_ready():
     print(f'봇이 로그인했어: {bot.user}')
     await init_db()
-    await bot.tree.sync()
+    try:
+        synced = await bot.tree.sync()
+        print(f'명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨')
+    except Exception as e:
+        print(f'명령어 동기화 실패: {e}')
     bot.loop.create_task(process_flex_queue())
 
 # Flask와 디스코드 봇 실행
