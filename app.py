@@ -115,7 +115,7 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # 레벨 확인 명령어
-@bot.command(name="레벨")
+@bot.tree.command(name="레벨")
 async def level(ctx, member: discord.Member = None):
     member = member or ctx.author
     async with aiosqlite.connect('users.db') as db:
@@ -129,7 +129,7 @@ async def level(ctx, member: discord.Member = None):
             await ctx.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
 # 리더보드 명령어
-@bot.command(name="리더보드")
+@bot.tree.command(name="리더보드")
 async def leaderboard(ctx):
     async with aiosqlite.connect('users.db') as db:
         cursor = await db.execute('SELECT user_id, xp, level FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5', (ctx.guild.id,))
@@ -148,7 +148,7 @@ async def leaderboard(ctx):
         await ctx.send(embed=embed)
 
 # 경험치 추가 명령어 (관리실 전용)
-@bot.command(name="경험치추가")
+@bot.tree.command(name="경험치추가")
 async def add_xp_command(ctx, member: discord.Member, xp: int):
     if ctx.channel.name != "관리실":
         await ctx.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!")
@@ -162,7 +162,7 @@ async def add_xp_command(ctx, member: discord.Member, xp: int):
     await ctx.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # 경험치 제거 명령어 (관리실 전용)
-@bot.command(name="경험치제거")
+@bot.tree.command(name="경험치제거")
 async def remove_xp_command(ctx, member: discord.Member, xp: int):
     if ctx.channel.name != "관리실":
         await ctx.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!")
