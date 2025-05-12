@@ -46,10 +46,11 @@ async def init_db():
     async with aiosqlite.connect('users.db') as db:
         await db.execute('''
             CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
+                user_id INTEGER,
                 guild_id INTEGER,
                 xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1
+                level INTEGER DEFAULT 1,
+                PRIMARY KEY (user_id, guild_id)
             )
         ''')
         await db.commit()
@@ -83,6 +84,11 @@ async def add_xp(user_id, guild_id, xp, channel=None):
                     await levelup_channel.send(f'{user.mention}님이 레벨 {new_level}로 올라갔어요!')
         
         new_xp = max(0, new_xp)
+        
+        await db.execute('UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?', (new_xp, new_level, user_id, guild_id))
+        await db.commit()
+        
+        return new_level, new_xp
         
         await db.execute('UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?', (new_xp, new_level, user_id, guild_id))
         await db.commit()
