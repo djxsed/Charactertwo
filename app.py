@@ -43,7 +43,6 @@ cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다
 # 데이터베이스 초기화
 async def init_db():
     try:
-        # Supabase에 연결
         pool = await asyncpg.create_pool(DATABASE_URL)
         async with pool.acquire() as conn:
             await conn.execute('''
@@ -55,10 +54,10 @@ async def init_db():
                     PRIMARY KEY (user_id, guild_id)
                 )
             ''')
-        return pool  # 연결 풀 반환
+        return pool
     except Exception as e:
         print(f"데이터베이스 초기화 오류: {e}")
-        raise
+        raise 
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
@@ -545,13 +544,16 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return task_id
 
 # 429 에러 재시도 로직
-async def send_message_with_retry(interaction, content, max_retries=3, ephemeral=False):
+async def send_message_with_retry(interaction_or_channel, content=None, max_retries=3, ephemeral=False, view=None, files=None, embed=None, is_interaction=False, **kwargs):
     for attempt in range(max_retries):
         try:
-            if interaction.response.is_done():
-                await interaction.followup.send(content, ephemeral=ephemeral)
+            if is_interaction and isinstance(interaction_or_channel, discord.Interaction):
+                if interaction_or_channel.response.is_done():
+                    await interaction_or_channel.followup.send(content, ephemeral=ephemeral, view=view, files=files, embed=embed)
+                else:
+                    await interaction_or_channel.response.send_message(content, ephemeral=ephemeral, view=view, files=files, embed=embed)
             else:
-                await interaction.response.send_message(content, ephemeral=ephemeral)
+                await interaction_or_channel.send(content, view=view, files=files, embed=embed)
             return
         except discord.HTTPException as e:
             if e.status == 429:
@@ -687,25 +689,23 @@ async def process_flex_queue():
                         else:
                             print(f"Found 캐릭터-목록 channel: {char_channel.name} (ID: {char_channel.id}, Type: {type(char_channel).__name__})")
                             try:
-                                if isinstance(char_channel, discord.ForumChannel):
-                                    thread_name = f"캐릭터: {post_name}"[:100]
-                                    thread, new_thread_id = await send_message_with_retry(
-                                        char_channel,
-                                        f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                        answers=answers,
-                                        post_name=post_name,
-                                        files=files
-                                    )
-                                    task["thread_id"] = new_thread_id
-                                    print(f"Posted to ForumChannel thread: {new_thread_id}")
-                                else:
-                                    message, message_id = await send_message_with_retry(
-                                        char_channel,
-                                        f"{member.mention}의 캐릭터:\n{formatted_description}",
-                                        files=files
-                                    )
-                                    task["thread_id"] = message_id
-                                    print(f"Posted to TextChannel message: {message_id}")
+if isinstance(char_channel, discord.ForumChannel):
+    thread_name = f"캐릭터: {post_name}"[:100]
+    thread, message = await char_channel.create_thread(
+        name=thread_name,
+        content=f"{member.mention}의 캐릭터:\n{formatted_description}",
+        files=files
+    )
+    task["thread_id"] = str(thread.id)
+    print(f"Posted to ForumChannel thread: {thread.id}")
+else:
+    message = await send_message_with_retry(
+        char_channel,
+        f"{member.mention}의 캐릭터:\n{formatted_description}",
+        files=files
+    )
+    task["thread_id"] = str(message.id)
+    print(f"Posted to TextChannel message: {message.id}")
                             except Exception as e:
                                 print(f"Error posting to 캐릭터-목록 channel: {str(e)}")
                                 result_message += f"\n❌ 캐릭터-목록 채널 등록 중 오류: {str(e)} 🥺"
@@ -1174,8 +1174,8 @@ async def character_list(interaction: discord.Interaction):
 # 봇 시작 시 실행
 @bot.event
 async def on_ready():
+    global bot  # Declare bot as global at the start
     print(f'봇이 로그인했어: {bot.user}')
-    global bot  # bot을 전역 변수로 사용
     bot.db_pool = await init_db()  # Supabase 연결
     try:
         synced = await bot.tree.sync()
