@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-import aiosqlite
 import asyncio
 from discord.ext.commands import CooldownMapping, BucketType
 import os
@@ -15,6 +14,7 @@ from flask import Flask
 import threading
 import aiohttp
 import io
+import asyncpg
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -25,6 +25,7 @@ def home():
 
 # 환경 변수 불러오기
 load_dotenv()
+DATABASE_URL = os.getenv("DATABASE_URL")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -41,37 +42,36 @@ cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다
 
 # 데이터베이스 초기화
 async def init_db():
-    async with aiosqlite.connect('users.db') as db:
-        await db.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER,
-                guild_id INTEGER,
-                xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1,
-                PRIMARY KEY (user_id, guild_id)
-            )
-        ''')
-        await db.commit()
+    try:
+        # Supabase에 연결
+        pool = await asyncpg.create_pool(DATABASE_URL)
+        return pool  # 연결 풀 반환
+    except Exception as e:
+        print(f"데이터베이스 초기화 오류: {e}")
+        raise
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
     return level * 200  # 레벨당 필요한 경험치
 
-async def add_xp(user_id, guild_id, xp, channel=None):
-    async with aiosqlite.connect('users.db') as db:
-        cursor = await db.execute('SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?', (user_id, guild_id))
-        row = await cursor.fetchone()
+async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT xp, level FROM users WHERE user_id = $1 AND guild_id = $2',
+            user_id, guild_id
+        )
         
         if row is None:
-            await db.execute('INSERT INTO users (user_id, guild_id, xp, level) VALUES (?, ?, ?, 1)', (user_id, guild_id, xp))
-            await db.commit()
+            await conn.execute(
+                'INSERT INTO users (user_id, guild_id, xp, level) VALUES ($1, $2, $3, 1)',
+                user_id, guild_id, xp
+            )
             return 1, xp
         
-        current_xp, current_level = row
+        current_xp, current_level = row['xp'], row['level']
         new_xp = current_xp + xp
         new_level = current_level
         
-        # 레벨업 확인
         while new_xp >= get_level_xp(new_level) and new_level < 30:
             new_xp -= get_level_xp(new_level)
             new_level += 1
@@ -83,13 +83,10 @@ async def add_xp(user_id, guild_id, xp, channel=None):
         
         new_xp = max(0, new_xp)
         
-        await db.execute('UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?', (new_xp, new_level, user_id, guild_id))
-        await db.commit()
-        
-        return new_level, new_xp
-        
-        await db.execute('UPDATE users SET xp = ?, level = ? WHERE user_id = ? AND guild_id = ?', (new_xp, new_level, user_id, guild_id))
-        await db.commit()
+        await conn.execute(
+            'UPDATE users SET xp = $1, level = $2 WHERE user_id = $3 AND guild_id = $4',
+            new_xp, new_level, user_id, guild_id
+        )
         
         return new_level, new_xp
 
@@ -99,16 +96,14 @@ async def on_message(message):
     if message.author.bot or not message.guild:
         return
     
-    # 쿨다운 체크
     bucket = cooldown.get_bucket(message)
     retry_after = bucket.update_rate_limit()
     if retry_after:
         return
     
-    # 글자 수로 경험치 계산 (공백 포함)
     xp = len(message.content)
     if xp > 0:
-        await add_xp(message.author.id, message.guild.id, xp, message.channel)
+        await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
     
     await bot.process_commands(message)
 
@@ -1159,7 +1154,7 @@ async def character_list(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f'봇이 로그인했어: {bot.user}')
-    await init_db()
+    bot.db_pool = await init_db()  # Supabase 연결
     try:
         synced = await bot.tree.sync()
         print(f'명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨')
