@@ -45,6 +45,16 @@ async def init_db():
     try:
         # Supabase에 연결
         pool = await asyncpg.create_pool(DATABASE_URL)
+        async with pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT,
+                    guild_id BIGINT,
+                    xp INTEGER DEFAULT 0,
+                    level INTEGER DEFAULT 1,
+                    PRIMARY KEY (user_id, guild_id)
+                )
+            ''')
         return pool  # 연결 풀 반환
     except Exception as e:
         print(f"데이터베이스 초기화 오류: {e}")
@@ -103,7 +113,10 @@ async def on_message(message):
     
     xp = len(message.content)
     if xp > 0:
-        await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
+        if hasattr(bot, 'db_pool') and bot.db_pool is not None:
+            await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
+        else:
+            print("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
     
     await bot.process_commands(message)
 
@@ -119,14 +132,16 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 
     await interaction.response.defer()  # 응답 지연 처리
     member = member or interaction.user
-    async with aiosqlite.connect('users.db') as db:
-        cursor = await db.execute('SELECT xp, level FROM users WHERE user_id = ? AND guild_id = ?', (member.id, interaction.guild.id))
-        row = await cursor.fetchone()
+    async with bot.db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT xp, level FROM users WHERE user_id = $1 AND guild_id = $2',
+            member.id, interaction.guild.id
+        )
         
         if row is None:
             await send_message_with_retry(interaction, f'{member.display_name}님은 아직 경험치가 없어요!')
         else:
-            xp, level = row
+            xp, level = row['xp'], row['level']
             await send_message_with_retry(interaction, f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
 # 리더보드 명령어
@@ -140,19 +155,25 @@ async def leaderboard(interaction: discord.Interaction):
         return
 
     await interaction.response.defer()  # 응답 지연 처리
-    async with aiosqlite.connect('users.db') as db:
-        cursor = await db.execute('SELECT user_id, xp, level FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5', (interaction.guild.id,))
-        rows = await cursor.fetchall()
+    async with bot.db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            'SELECT user_id, xp, level FROM users WHERE guild_id = $1 ORDER BY level DESC, xp DESC LIMIT 5',
+            interaction.guild.id
+        )
         
         if not rows:
             await send_message_with_retry(interaction, '아직 리더보드에 데이터가 없어요!')
             return
         
         embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
-        for i, (user_id, xp, level) in enumerate(rows, 1):
-            user = interaction.guild.get_member(user_id)
+        for i, row in enumerate(rows, 1):
+            user = interaction.guild.get_member(row['user_id'])
             if user:
-                embed.add_field(name=f"{i}. {user.display_name}", value=f"레벨 {level} | XP: {xp}/{get_level_xp(level)}", inline=False)
+                embed.add_field(
+                    name=f"{i}. {user.display_name}",
+                    value=f"레벨 {row['level']} | XP: {row['xp']}/{get_level_xp(row['level'])}",
+                    inline=False
+                )
         
         await send_message_with_retry(interaction, embed=embed)
 
@@ -1154,6 +1175,7 @@ async def character_list(interaction: discord.Interaction):
 @bot.event
 async def on_ready():
     print(f'봇이 로그인했어: {bot.user}')
+    global bot  # bot을 전역 변수로 사용
     bot.db_pool = await init_db()  # Supabase 연결
     try:
         synced = await bot.tree.sync()
