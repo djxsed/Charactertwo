@@ -55,7 +55,7 @@ async def init_db():
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
-    return level * 100  # 레벨당 필요한 경험치
+    return level * 200  # 레벨당 필요한 경험치
 
 async def add_xp(user_id, guild_id, xp, channel=None):
     async with aiosqlite.connect('users.db') as db:
