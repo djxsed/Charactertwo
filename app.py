@@ -39,8 +39,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다운
 
-# --- 첫 번째 스크립트: 레벨링 시스템 ---
-
 # 데이터베이스 초기화
 async def init_db():
     async with aiosqlite.connect('users.db') as db:
@@ -117,6 +115,13 @@ async def on_message(message):
 # 레벨 확인 명령어
 @bot.tree.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
 async def level(interaction: discord.Interaction, member: discord.Member = None):
+    # 쿨다운 체크
+    bucket = cooldown.get_bucket(interaction)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        await send_message_with_retry(interaction, f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+        return
+
     await interaction.response.defer()  # 응답 지연 처리
     member = member or interaction.user
     async with aiosqlite.connect('users.db') as db:
@@ -124,21 +129,28 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
         row = await cursor.fetchone()
         
         if row is None:
-            await interaction.followup.send(f'{member.display_name}님은 아직 경험치가 없어요!')
+            await send_message_with_retry(interaction, f'{member.display_name}님은 아직 경험치가 없어요!')
         else:
             xp, level = row
-            await interaction.followup.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
+            await send_message_with_retry(interaction, f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
 # 리더보드 명령어
 @bot.tree.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
 async def leaderboard(interaction: discord.Interaction):
+    # 쿨다운 체크
+    bucket = cooldown.get_bucket(interaction)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        await send_message_with_retry(interaction, f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+        return
+
     await interaction.response.defer()  # 응답 지연 처리
     async with aiosqlite.connect('users.db') as db:
         cursor = await db.execute('SELECT user_id, xp, level FROM users WHERE guild_id = ? ORDER BY level DESC, xp DESC LIMIT 5', (interaction.guild.id,))
         rows = await cursor.fetchall()
         
         if not rows:
-            await interaction.followup.send('아직 리더보드에 데이터가 없어요!')
+            await send_message_with_retry(interaction, '아직 리더보드에 데이터가 없어요!')
             return
         
         embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
@@ -147,39 +159,53 @@ async def leaderboard(interaction: discord.Interaction):
             if user:
                 embed.add_field(name=f"{i}. {user.display_name}", value=f"레벨 {level} | XP: {xp}/{get_level_xp(level)}", inline=False)
         
-        await interaction.followup.send(embed=embed)
+        await send_message_with_retry(interaction, embed=embed)
 
 # 경험치 추가 명령어 (관리자 전용)
 @bot.tree.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
 @commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
+    # 쿨다운 체크
+    bucket = cooldown.get_bucket(interaction)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        await send_message_with_retry(interaction, f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+        return
+
     await interaction.response.defer()  # 응답 지연 처리
     if interaction.channel.name != "관리실":
-        await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+        await send_message_with_retry(interaction, "이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
     
     if xp <= 0:
-        await interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True)
+        await send_message_with_retry(interaction, "추가할 경험치는 양수여야 합니다!", ephemeral=True)
         return
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel)
-    await interaction.followup.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    await send_message_with_retry(interaction, f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # 경험치 제거 명령어 (관리자 전용)
 @bot.tree.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
 @commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
+    # 쿨다운 체크
+    bucket = cooldown.get_bucket(interaction)
+    retry_after = bucket.update_rate_limit()
+    if retry_after:
+        await send_message_with_retry(interaction, f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+        return
+
     await interaction.response.defer()  # 응답 지연 처리
     if interaction.channel.name != "관리실":
-        await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+        await send_message_with_retry(interaction, "이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
     
     if xp <= 0:
-        await interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True)
+        await send_message_with_retry(interaction, "제거할 경험치는 양수여야 합니다!", ephemeral=True)
         return
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel)
-    await interaction.followup.send(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    await send_message_with_retry(interaction, f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # --- 두 번째 스크립트: 캐릭터 심사 시스템 ---
 
@@ -503,28 +529,14 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return task_id
 
 # 429 에러 재시도 로직
-async def send_message_with_retry(channel, content, answers=None, post_name=None, max_retries=3, is_interaction=False, interaction=None, files=None, view=None):
-    files = files or []
+async def send_message_with_retry(interaction, content, max_retries=3, ephemeral=False):
     for attempt in range(max_retries):
         try:
-            if is_interaction and interaction:
-                await interaction.followup.send(content, files=files, view=view)
-                return None, None
-            elif isinstance(channel, discord.ForumChannel) and answers and post_name:
-                thread_name = f"캐릭터: {post_name}"[:100]
-                thread = await channel.create_thread(
-                    name=thread_name,
-                    content=content,
-                    auto_archive_duration=10080,
-                    files=files
-                )
-                thread_id = str(thread.thread.id)
-                print(f"Created thread in ForumChannel: {thread_name} (ID: {thread_id})")
-                return thread, thread_id
+            if interaction.response.is_done():
+                await interaction.followup.send(content, ephemeral=ephemeral)
             else:
-                message = await channel.send(content, files=files, view=view)
-                print(f"Sent message to channel: {channel.name} (ID: {message.id})")
-                return message, str(message.id)
+                await interaction.response.send_message(content, ephemeral=ephemeral)
+            return
         except discord.HTTPException as e:
             if e.status == 429:
                 retry_after = getattr(e, 'retry_after', 5.0)
