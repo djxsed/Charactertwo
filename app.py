@@ -15,6 +15,7 @@ import threading
 import aiohttp
 import io
 import asyncpg
+import urllib.parse
 
 # Flask 웹 서버 설정
 app = Flask(__name__)
@@ -41,9 +42,23 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다운
 
 # 데이터베이스 초기화
+import urllib.parse
+import asyncpg
+
 async def init_db():
     try:
-        pool = await asyncpg.create_pool(DATABASE_URL)
+        # DATABASE_URL 디버깅 출력
+        print(f"DATABASE_URL: {DATABASE_URL}")
+        
+        # DATABASE_URL의 비밀번호 부분을 URL 인코딩
+        parsed = urllib.parse.urlparse(DATABASE_URL)
+        if not parsed.scheme.startswith("postgresql"):
+            raise ValueError("DATABASE_URL must start with 'postgresql://'")
+        
+        encoded_password = urllib.parse.quote(parsed.password, safe='')
+        encoded_url = parsed._replace(netloc=f"{parsed.username}:{encoded_password}@{parsed.hostname}:{parsed.port}").geturl()
+        
+        pool = await asyncpg.create_pool(encoded_url)
         async with pool.acquire() as conn:
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
@@ -57,7 +72,7 @@ async def init_db():
         return pool
     except Exception as e:
         print(f"데이터베이스 초기화 오류: {e}")
-        raise 
+        raise
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
