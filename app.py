@@ -222,7 +222,7 @@ async def sync_commands():
 
 # 레벨 확인 명령어
 @app_commands.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
-@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def level(interaction: discord.Interaction, member: discord.Member = None):
     await interaction.response.defer()
     member = member or interaction.user
@@ -242,7 +242,7 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 
 # 리더보드 명령어
 @app_commands.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
-@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def leaderboard(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
@@ -274,7 +274,7 @@ async def leaderboard(interaction: discord.Interaction):
 # 경험치 추가 명령어 (관리자 전용)
 @app_commands.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     await interaction.response.defer()
     try:
@@ -304,7 +304,7 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
 # 경험치 제거 명령어 (관리자 전용)
 @app_commands.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
 @app_commands.checks.has_permissions(administrator=True)
-@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
+@app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     await interaction.response.defer()
     try:
