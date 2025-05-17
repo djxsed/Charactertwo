@@ -102,18 +102,18 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
             'SELECT xp, level FROM users WHERE user_id = $1 AND guild_id = $2',
             user_id, guild_id
         )
-        
+
         if row is None:
             await conn.execute(
                 'INSERT INTO users (user_id, guild_id, xp, level) VALUES ($1, $2, $3, 1)',
                 user_id, guild_id, xp
             )
             return 1, xp
-        
+
         current_xp, current_level = row['xp'], row['level']
         new_xp = current_xp + xp
         new_level = current_level
-        
+
         while new_xp >= get_level_xp(new_level) and new_level < 30:
             new_xp -= get_level_xp(new_level)
             new_level += 1
@@ -121,30 +121,35 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
                 levelup_channel = discord.utils.get(channel.guild.channels, name="레벨업")
                 if levelup_channel:
                     user = channel.guild.get_member(user_id)
-                    await levelup_channel.send(f'{user.mention}님이 레벨 {new_level}로 올라갔어요!')
-        
+                    if user:
+                        await levelup_channel.send(f'{user.mention}님이 레벨 {new_level}로 올라갔어요!')
+                        try:
+                            await user.edit(nick=f"[{new_level}렙] {user.name}")
+                        except discord.errors.Forbidden:
+                            logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
+
         new_xp = max(0, new_xp)
-        
+
         await conn.execute(
             'UPDATE users SET xp = $1, level = $2 WHERE user_id = $3 AND guild_id = $4',
             new_xp, new_level, user_id, guild_id
         )
-        
-        return new_level airfoil, new_xp
+
+        return new_level, new_xp
 
 # 메시지 처리
 @bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
         return
-    
+
     xp = len(message.content)
     if xp > 0:
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
             await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
         else:
             logger.warning("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
-    
+
     await bot.process_commands(message)
 
 # 명령어 동기화 함수
@@ -182,7 +187,7 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
             'SELECT xp, level FROM users WHERE user_id = $1 AND guild_id = $2',
             member.id, interaction.guild.id
         )
-        
+
         if row is None:
             await interaction.followup.send(f'{member.display_name}님은 아직 경험치가 없어요!')
         else:
@@ -199,11 +204,11 @@ async def leaderboard(interaction: discord.Interaction):
             'SELECT user_id, xp, level FROM users WHERE guild_id = $1 ORDER BY level DESC, xp DESC LIMIT 5',
             interaction.guild.id
         )
-        
+
         if not rows:
             await interaction.followup.send('아직 리더보드에 데이터가 없어요!')
             return
-        
+
         embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
         for i, row in enumerate(rows, 1):
             user = interaction.guild.get_member(row['user_id'])
@@ -213,7 +218,7 @@ async def leaderboard(interaction: discord.Interaction):
                     value=f"레벨 {row['level']} | XP: {row['xp']}/{get_level_xp(row['level'])}",
                     inline=False
                 )
-        
+
         await interaction.followup.send(embed=embed)
 
 # 경험치 추가 명령어 (관리자 전용)
@@ -225,13 +230,17 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
     if interaction.channel.name != "관리실":
         await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
-    
+
     if xp <= 0:
         await interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True)
         return
-        
+
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel, bot.db_pool)
     await interaction.followup.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    try:
+        await member.edit(nick=f"[{new_level}렙] {member.name}")
+    except discord.errors.Forbidden:
+        await interaction.followup.send("봇에게 해당 유저의 닉네임을 변경할 권한이 없습니다.", ephemeral=True)
 
 # 경험치 제거 명령어 (관리자 전용)
 @app_commands.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
@@ -242,13 +251,17 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
     if interaction.channel.name != "관리실":
         await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
         return
-    
+
     if xp <= 0:
         await interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True)
         return
-        
+
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
     await interaction.followup.send(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    try:
+        await member.edit(nick=f"[{new_level}렙] {member.name}")
+    except discord.errors.Forbidden:
+        await interaction.followup.send("봇에게 해당 유저의 닉네임을 변경할 권한이 없습니다.", ephemeral=True)
 
 # 쿨다운 에러 처리
 @bot.tree.error
