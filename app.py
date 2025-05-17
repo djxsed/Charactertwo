@@ -96,7 +96,7 @@ async def init_db():
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
-    return level * 200
+    return level * 500
 
 # API 호출에 재시도 로직 추가
 async def with_retry(coro, max_retries=3, base_delay=1):
