@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-PORT = int(os.getenv("PORT", 8000))  # Render에서 제공하는 PORT, 기본값 8000
+PORT = int(os.getenv("PORT", 8000))
 
 # 환경 변수 유효성 검사
 if not DISCORD_TOKEN:
@@ -57,19 +57,6 @@ async def start_web_server():
 async def init_db():
     try:
         logger.info("데이터베이스 초기화를 시작합니다...")
-
-        # DATABASE_URL 디버깅 출력 (비밀번호 마스킹)
-        masked_url = DATABASE_URL
-        if "://" in DATABASE_URL:
-            scheme, rest = DATABASE_URL.split("://", 1)
-            if "@" in rest:
-                userinfo, hostinfo = rest.split("@", 1)
-                if ":" in userinfo:
-                    user, _ = userinfo.split(":", 1)
-                    masked_url = f"{scheme}://{user}:[REDACTED]@{hostinfo}"
-        logger.info(f"Raw DATABASE_URL: {masked_url}")
-
-        # 비밀번호에 특수 문자가 포함된 경우를 처리하기 위해 URL 정규화
         scheme_match = re.match(r"^(postgresql|postgres)://", DATABASE_URL, re.IGNORECASE)
         if not scheme_match:
             logger.error("DATABASE_URL은 'postgresql://' 또는 'postgres://'로 시작해야 합니다.")
@@ -79,7 +66,7 @@ async def init_db():
         rest = DATABASE_URL[len(scheme):]
         userinfo, hostinfo = rest.split("@", 1)
         username, password = userinfo.split(":", 1) if ":" in userinfo else (userinfo, "")
-        hostname_port, dbname = hostinfo.split("/", 1) if "/" in hostinfo else (hostinfo, "postgres")
+        hostname_port, dbname = hostinfo.split("/", 1) if "/", hostinfo else (hostinfo, "postgres")
         hostname, port = hostname_port.split(":", 1) if ":" in hostname_port else (hostname_port, "5432")
 
         encoded_password = urllib.parse.quote(password, safe='')
@@ -107,7 +94,7 @@ async def init_db():
 
 # 경험치와 레벨 계산
 def get_level_xp(level):
-    return level * 200  # 레벨당 필요한 경험치
+    return level * 200
 
 async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
     async with pool.acquire() as conn:
@@ -159,6 +146,30 @@ async def on_message(message):
             logger.warning("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
     
     await bot.process_commands(message)
+
+# 명령어 동기화 함수
+async def sync_commands():
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info(f"명령어 동기화 시도 {attempt}/{max_retries}...")
+            # 명령어를 명시적으로 등록
+            bot.tree.clear_commands(guild=None)  # 기존 명령어 초기화
+            bot.tree.add_command(level)
+            bot.tree.add_command(leaderboard)
+            bot.tree.add_command(add_xp_command)
+            bot.tree.add_command(remove_xp_command)
+            # 글로벌 명령어 동기화
+            synced = await bot.tree.sync()
+            logger.info(f"명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨")
+            return synced
+        except Exception as e:
+            logger.error(f"명령어 동기화 실패 (시도 {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(5)  # 재시도 전 대기
+            else:
+                logger.error("최대 재시도 횟수 초과. 명령어 동기화 실패.")
+                raise
 
 # 레벨 확인 명령어
 @app_commands.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
@@ -253,19 +264,12 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 async def on_ready():
     logger.info(f'봇이 로그인했어: {bot.user}')
     bot.db_pool = await init_db()
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f'명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨')
-    except Exception as e:
-        logger.error(f'명령어 동기화 실패: {e}')
-        raise
+    await sync_commands()
 
 # 봇과 웹 서버를 동시에 실행
 async def main():
     try:
-        # 웹 서버 시작
         await start_web_server()
-        # Discord 봇 시작
         await bot.start(DISCORD_TOKEN)
     except Exception as e:
         logger.error(f"봇 또는 웹 서버 실행 중 오류 발생: {e}")
