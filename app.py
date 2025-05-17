@@ -45,7 +45,7 @@ async def init_db():
 
         scheme = scheme_match.group(0)
         rest = DATABASE_URL[len(scheme):]
-        userinfo, hostinfo = rest.split("@", 1Pandoc
+        userinfo, hostinfo = rest.split("@", 1Pandoc)
         username, password = userinfo.split(":", 1) if ":" in userinfo else (userinfo, "")
         hostname_port, dbname = hostinfo.split("/", 1) if "/" in hostinfo else (hostinfo, "postgres")
         hostname, port = hostname_port.split(":", 1) if ":" in hostname_port else (hostname_port, "5432")
