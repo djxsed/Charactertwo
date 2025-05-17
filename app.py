@@ -47,6 +47,7 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 bot.rate_limit_until = 0  # 글로벌 rate limit 해제 시간
 bot.xp_queue = defaultdict(list)  # 경험치 큐: (user_id, guild_id, xp, timestamp)
 bot.is_rate_limited = False  # Rate Limit 상태 플래그
+bot.nickname_queue = []  # 닉네임 변경 큐: (user, new_level, timestamp)
 
 # aiohttp 웹 서버 설정
 async def handle_root(request):
@@ -154,6 +155,32 @@ async def process_xp_queue():
             logger.error(f"경험치 큐 처리 중 오류: {e}", exc_info=True)
         await asyncio.sleep(30)  # 30초마다 큐 처리
 
+async def process_nickname_queue():
+    """주기적으로 닉네임 변경 큐를 처리 (1초 간격으로 처리)"""
+    while True:
+        try:
+            if bot.nickname_queue and not bot.is_rate_limited:
+                user, new_level, _ = bot.nickname_queue.pop(0)
+                try:
+                    await user.edit(nick=f"[{new_level}렙] {user.name}")
+                except discord.errors.Forbidden:
+                    logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
+                except discord.errors.HTTPException as e:
+                    if e.status == 429:
+                        retry_after = float(e.response.headers.get('Retry-After', 1))
+                        bot.rate_limit_until = time.time() + retry_after
+                        bot.is_rate_limited = True
+                        logger.warning(f"닉네임 변경 중 rate limit 발생, {retry_after:.2f}초 대기")
+                        bot.nickname_queue.insert(0, (user, new_level, time.time()))  # 재시도 위해 큐에 다시 추가
+                    else:
+                        logger.error(f"닉네임 변경 중 오류 발생: {e}")
+                except Exception as e:
+                    logger.error(f"닉네임 변경 중 오류 발생: {e}")
+                await asyncio.sleep(1)  # Discord rate limit 방지를 위해 1초 대기
+        except Exception as e:
+            logger.error(f"닉네임 큐 처리 중 오류: {e}")
+        await asyncio.sleep(0.1)  # CPU 부하 감소
+
 async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
     try:
         if pool is None:
@@ -211,17 +238,14 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
         logger.error(f"경험치 처리 중 오류 발생: {e}", exc_info=True)
         return 1, 0
 
-# 닉네임 변경 함수
+# 닉네임 변경 함수 (큐에 추가)
 async def update_nickname(user, new_level):
     try:
-        await user.edit(nick=f"[{new_level}렙] {user.name}")
-    except discord.errors.Forbidden:
-        logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
-        return False
+        bot.nickname_queue.append((user, new_level, time.time()))
+        return True
     except Exception as e:
-        logger.error(f"닉네임 변경 중 오류 발생: {e}", exc_info=True)
+        logger.error(f"닉네임 변경 큐 추가 중 오류 발생: {e}")
         return False
-    return True
 
 # 메시지 처리
 @bot.event
@@ -376,7 +400,7 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
             await interaction.followup.send(
-                "봇에 멤버 닉네임 관리 권한이 없습니다. 닉네임은 변경되지 않았습니다.",
+                "닉네임 변경 요청이 큐에 추가되었으나 오류가 발생했습니다.",
                 ephemeral=True
             )
         
@@ -424,7 +448,7 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
             await interaction.followup.send(
-                "봇에 멤버 닉네임 관리 권한이 없습니다. 닉네임은 변경되지 않았습니다.",
+                "닉네임 변경 요청이 큐에 추가되었으나 오류가 발생했습니다.",
                 ephemeral=True
             )
         
@@ -475,6 +499,7 @@ async def on_ready():
         bot.db_pool = await init_db()
         await sync_commands()  # 한 번만 동기화
         bot.loop.create_task(process_xp_queue())
+        bot.loop.create_task(process_nickname_queue())  # 닉네임 큐 처리 태스크 시작
     except Exception as e:
         logger.error(f"봇 초기화 중 오류 발생: {e}", exc_info=True)
         raise
