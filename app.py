@@ -1,7 +1,7 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import asyncio
-from discord.ext.commands import CooldownMapping, BucketType
 import os
 from dotenv import load_dotenv
 import asyncpg
@@ -19,7 +19,6 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
-cooldown = CooldownMapping.from_cooldown(1, 5.0, BucketType.user)  # 5초 쿨다운
 
 # 데이터베이스 초기화
 async def init_db():
@@ -117,11 +116,6 @@ async def on_message(message):
     if message.author.bot or not message.guild:
         return
     
-    bucket = cooldown.get_bucket(message)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        return
-    
     xp = len(message.content)
     if xp > 0:
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
@@ -132,14 +126,9 @@ async def on_message(message):
     await bot.process_commands(message)
 
 # 레벨 확인 명령어
-@bot.tree.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
+@app_commands.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
 async def level(interaction: discord.Interaction, member: discord.Member = None):
-    bucket = cooldown.get_bucket(interaction)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        await interaction.response.send_message(f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
-        return
-
     await interaction.response.defer()
     member = member or interaction.user
     async with bot.db_pool.acquire() as conn:
@@ -155,14 +144,9 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
             await interaction.followup.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
 # 리더보드 명령어
-@bot.tree.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
+@app_commands.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
 async def leaderboard(interaction: discord.Interaction):
-    bucket = cooldown.get_bucket(interaction)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        await interaction.response.send_message(f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
-        return
-
     await interaction.response.defer()
     async with bot.db_pool.acquire() as conn:
         rows = await conn.fetch(
@@ -187,15 +171,10 @@ async def leaderboard(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed)
 
 # 경험치 추가 명령어 (관리자 전용)
-@bot.tree.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
-@commands.has_permissions(administrator=True)
+@app_commands.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
-    bucket = cooldown.get_bucket(interaction)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        await interaction.response.send_message(f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
-        return
-
     await interaction.response.defer()
     if interaction.channel.name != "관리실":
         await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
@@ -209,15 +188,10 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
     await interaction.followup.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # 경험치 제거 명령어 (관리자 전용)
-@bot.tree.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
-@commands.has_permissions(administrator=True)
+@app_commands.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.checks.cooldown(1, 5.0, key=lambda i: (i.guild_id, i.user.id))
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
-    bucket = cooldown.get_bucket(interaction)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        await interaction.response.send_message(f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
-        return
-
     await interaction.response.defer()
     if interaction.channel.name != "관리실":
         await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
@@ -229,6 +203,14 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
     await interaction.followup.send(f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+
+# 쿨다운 에러 처리
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.CommandOnCooldown):
+        await interaction.response.send_message(f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+    else:
+        raise error
 
 # 봇 시작 시 실행
 @bot.event
