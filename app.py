@@ -45,12 +45,12 @@ async def init_db():
 
         scheme = scheme_match.group(0)
         rest = DATABASE_URL[len(scheme):]
-        userinfo, hostinfo = rest.split("@", 1Pandoc)
+        userinfo, hostinfo = rest.split("@", 1)
         username, password = userinfo.split(":", 1) if ":" in userinfo else (userinfo, "")
         hostname_port, dbname = hostinfo.split("/", 1) if "/" in hostinfo else (hostinfo, "postgres")
         hostname, port = hostname_port.split(":", 1) if ":" in hostname_port else (hostname_port, "5432")
 
-        encoded_password = urllib.parse.quote(password,ê safe='')
+        encoded_password = urllib.parse.quote(password, safe='')
         normalized_url = f"postgresql://{username}:{encoded_password}@{hostname}:{port}/{dbname}"
 
         print(f"Normalized DATABASE_URL: {normalized_url}")
@@ -206,7 +206,7 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
         return
         
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel, bot.db_pool)
-    await interaction.followup.send(f'{member.display_name}님에게 {xp علوم의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
+    await interaction.followup.send(f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
 # 경험치 제거 명령어 (관리자 전용)
 @bot.tree.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
