@@ -46,6 +46,7 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 # Rate Limit 관리
 bot.rate_limit_until = 0  # 글로벌 rate limit 해제 시간
 bot.xp_queue = defaultdict(list)  # 경험치 큐: (user_id, guild_id, xp, timestamp)
+bot.is_rate_limited = False  # Rate Limit 상태 플래그
 
 # aiohttp 웹 서버 설정
 async def handle_root(request):
@@ -108,19 +109,17 @@ async def with_retry(coro, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
         if time.time() < bot.rate_limit_until:
             retry_after = bot.rate_limit_until - time.time()
-            logger.warning(f"글로벌 rate limit 적용 중, {retry_after:.2f}초 후 재시도")
+            logger.warning(f"Rate limit 적용 중, {retry_after:.2f}초 후 재시도")
             await asyncio.sleep(retry_after)
             continue
         try:
             return await asyncio.wait_for(coro, timeout=10.0)
-        except discord.errors.Forbidden as e:
-            logger.error(f"권한 부족 오류: {e}", exc_info=True)
-            raise  # 권한 에러는 재시도하지 않고 즉시抛出
         except discord.errors.HTTPException as e:
             if e.status == 429:  # Rate limit error
                 retry_after = float(e.response.headers.get('Retry-After', base_delay))
                 if 'X-RateLimit-Scope' in e.response.headers and e.response.headers['X-RateLimit-Scope'] == 'global':
                     bot.rate_limit_until = time.time() + retry_after
+                    bot.is_rate_limited = True
                     logger.warning(f"글로벌 rate limit 발생, {retry_after:.2f}초 대기")
                 else:
                     logger.warning(f"로컬 rate limit 발생, {retry_after:.2f}초 후 재시도 (시도 {attempt + 1}/{max_retries})")
@@ -142,18 +141,18 @@ async def with_retry(coro, max_retries=3, base_delay=1):
             raise
 
 async def process_xp_queue():
-    """주기적으로 경험치 큐를 처리"""
+    """주기적으로 경험치 큐를 처리 (주기 30초로 증가)"""
     while True:
         try:
-            if bot.db_pool and bot.xp_queue:
+            if bot.db_pool and bot.xp_queue and not bot.is_rate_limited:
                 for (user_id, guild_id), entries in list(bot.xp_queue.items()):
                     total_xp = sum(xp for _, _, xp, _ in entries)
-                    channel = bot.get_channel(entries[0][1])  # 첫 번째 메시지의 채널 사용
+                    channel = bot.get_channel(entries[0][1])
                     await add_xp(user_id, guild_id, total_xp, channel, bot.db_pool)
                     del bot.xp_queue[(user_id, guild_id)]
         except Exception as e:
             logger.error(f"경험치 큐 처리 중 오류: {e}", exc_info=True)
-        await asyncio.sleep(10)  # 10초마다 큐 처리
+        await asyncio.sleep(30)  # 30초마다 큐 처리
 
 async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
     try:
@@ -178,7 +177,6 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
             new_xp = current_xp + xp
             new_level = current_level
 
-            # 레벨업/레벨다운 로직
             level_change_occurred = False
             while new_xp >= get_level_xp(new_level) and new_level < 30:
                 new_xp -= get_level_xp(new_level)
@@ -189,16 +187,13 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
                 new_xp += get_level_xp(new_level)
                 level_change_occurred = True
             
-            # 경험치가 음수가 되지 않도록
             new_xp = max(0, new_xp)
 
-            # 데이터베이스 업데이트
             await conn.execute(
                 'UPDATE users SET xp = $1, level = $2 WHERE user_id = $3 AND guild_id = $4',
                 new_xp, new_level, user_id, guild_id
             )
             
-            # 레벨 변경 알림 처리
             if level_change_occurred and channel:
                 try:
                     guild = channel.guild
@@ -207,9 +202,7 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
                         user = guild.get_member(user_id)
                         if user:
                             message = f'{user.mention}님이 레벨 {new_level}로 {"올라갔어요!" if xp > 0 else "내려갔어요!"}'
-                            await levelup_channel.send(message)  # with_retry 제거: 이미 권한 확인됨
-                except discord.errors.Forbidden:
-                    logger.warning(f"레벨업 메시지 전송 권한이 없습니다: 채널 {levelup_channel.id}")
+                            await levelup_channel.send(message)
                 except Exception as e:
                     logger.error(f"레벨 변경 알림 처리 중 오류 발생: {e}", exc_info=True)
             
@@ -218,7 +211,7 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
         logger.error(f"경험치 처리 중 오류 발생: {e}", exc_info=True)
         return 1, 0
 
-# 닉네임 변경 함수 분리
+# 닉네임 변경 함수
 async def update_nickname(user, new_level):
     try:
         await user.edit(nick=f"[{new_level}렙] {user.name}")
@@ -247,12 +240,11 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# 명령어 동기화 함수
+# 명령어 동기화 함수 (한 번만 실행)
 async def sync_commands():
-    max_retries = 3
-    for attempt in range(1, max_retries + 1):
+    if not hasattr(bot, 'commands_synced') or not bot.commands_synced:
         try:
-            logger.info(f"명령어 동기화 시도 {attempt}/{max_retries}...")
+            logger.info("명령어 동기화 시작...")
             bot.tree.clear_commands(guild=None)
             bot.tree.add_command(level)
             bot.tree.add_command(leaderboard)
@@ -260,23 +252,20 @@ async def sync_commands():
             bot.tree.add_command(remove_xp_command)
             synced = await with_retry(bot.tree.sync())
             logger.info(f"명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨")
+            bot.commands_synced = True
             return synced
         except Exception as e:
-            logger.error(f"명령어 동기화 실패 (시도 {attempt}/{max_retries}): {e}", exc_info=True)
-            if attempt < max_retries:
-                await asyncio.sleep(5)
-            else:
-                logger.error("최대 재시도 횟수 초과. 명령어 동기화 실패.")
-                raise
+            logger.error(f"명령어 동기화 실패: {e}", exc_info=True)
+            raise
 
 # 레벨 확인 명령어
 @app_commands.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def level(interaction: discord.Interaction, member: discord.Member = None):
     try:
-        if time.time() < bot.rate_limit_until:
+        if bot.is_rate_limited:
             await interaction.response.send_message(
-                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                "현재 Rate Limit에 걸려 있습니다. 약 10분 후 다시 시도해주세요.",
                 ephemeral=True
             )
             return
@@ -293,19 +282,16 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 
             message = f'{member.display_name}님은 아직 경험치가 없어요!' if row is None else \
                      f'{member.display_name}님은 현재 레벨 {row["level"]}이고, 경험치는 {row["xp"]}/{get_level_xp(row["level"])}이에요!'
-            await interaction.followup.send(message, ephemeral=True)  # with_retry 제거: 권한 문제 우회
-    except discord.errors.Forbidden:
-        logger.error(f"레벨 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
-                ephemeral=True
-            )
-        except:
-            logger.error("대체 응답 전송 실패", exc_info=True)
-    except asyncio.TimeoutError:
-        logger.error(f"레벨 명령어 데이터베이스 쿼리 타임아웃: user_id={member.id}, guild_id={interaction.guild.id}")
-        await interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요.", ephemeral=True)
+            await interaction.followup.send(message, ephemeral=True)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            bot.rate_limit_until = time.time() + 600  # 10분 대기
+            bot.is_rate_limited = True
+            logger.warning(f"Rate limit 발생, 10분 대기: {e}")
+            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+        else:
+            logger.error(f"레벨 명령어 실행 중 오류 발생: {e}", exc_info=True)
+            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"레벨 명령어 실행 중 오류 발생: {e}", exc_info=True)
         await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
@@ -315,9 +301,9 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def leaderboard(interaction: discord.Interaction):
     try:
-        if time.time() < bot.rate_limit_until:
+        if bot.is_rate_limited:
             await interaction.response.send_message(
-                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                "현재 Rate Limit에 걸려 있습니다. 약 10분 후 다시 시도해주세요.",
                 ephemeral=True
             )
             return
@@ -345,19 +331,16 @@ async def leaderboard(interaction: discord.Interaction):
                         inline=False
                     )
 
-            await interaction.followup.send(embed=embed)  # with_retry 제거: 권한 문제 우회
-    except discord.errors.Forbidden:
-        logger.error(f"리더보드 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '임베드 링크' 권한을 확인해 달라고 요청하세요.",
-                ephemeral=True
-            )
-        except:
-            logger.error("대체 응답 전송 실패", exc_info=True)
-    except asyncio.TimeoutError:
-        logger.error(f"리더보드 명령어 데이터베이스 쿼리 타임아웃: guild_id={interaction.guild.id}")
-        await interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요.")
+            await interaction.followup.send(embed=embed)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            bot.rate_limit_until = time.time() + 600
+            bot.is_rate_limited = True
+            logger.warning(f"Rate limit 발생, 10분 대기: {e}")
+            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+        else:
+            logger.error(f"리더보드 명령어 실행 중 오류 발생: {e}", exc_info=True)
+            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
     except Exception as e:
         logger.error(f"리더보드 명령어 실행 중 오류 발생: {e}", exc_info=True)
         await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
@@ -368,9 +351,9 @@ async def leaderboard(interaction: discord.Interaction):
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     try:
-        if time.time() < bot.rate_limit_until:
+        if bot.is_rate_limited:
             await interaction.response.send_message(
-                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                "현재 Rate Limit에 걸려 있습니다. 약 10분 후 다시 시도해주세요.",
                 ephemeral=True
             )
             return
@@ -385,13 +368,11 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel, bot.db_pool)
         
-        # 경험치 추가 결과 먼저 응답
         await interaction.followup.send(
             f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
         )
         
-        # 닉네임 변경은 별도로 처리
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
             await interaction.followup.send(
@@ -399,15 +380,15 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
                 ephemeral=True
             )
         
-    except discord.errors.Forbidden:
-        logger.error(f"경험치 추가 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
-                ephemeral=True
-            )
-        except:
-            logger.error("대체 응답 전송 실패", exc_info=True)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            bot.rate_limit_until = time.time() + 600
+            bot.is_rate_limited = True
+            logger.warning(f"Rate limit 발생, 10분 대기: {e}")
+            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+        else:
+            logger.error(f"경험치 추가 명령어 실행 중 오류 발생: {e}", exc_info=True)
+            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"경험치 추가 명령어 실행 중 오류 발생: {e}", exc_info=True)
         await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
@@ -418,9 +399,9 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     try:
-        if time.time() < bot.rate_limit_until:
+        if bot.is_rate_limited:
             await interaction.response.send_message(
-                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                "현재 Rate Limit에 걸려 있습니다. 약 10분 후 다시 시도해주세요.",
                 ephemeral=True
             )
             return
@@ -435,13 +416,11 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
         
-        # 경험치 제거 결과 먼저 응답
         await interaction.followup.send(
             f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
         )
         
-        # 닉네임 변경은 별도로 처리
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
             await interaction.followup.send(
@@ -449,15 +428,15 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
                 ephemeral=True
             )
         
-    except discord.errors.Forbidden:
-        logger.error(f"경험치 제거 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
-        try:
-            await interaction.followup.send(
-                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
-                ephemeral=True
-            )
-        except:
-            logger.error("대체 응답 전송 실패", exc_info=True)
+    except discord.errors.HTTPException as e:
+        if e.status == 429:
+            bot.rate_limit_until = time.time() + 600
+            bot.is_rate_limited = True
+            logger.warning(f"Rate limit 발생, 10분 대기: {e}")
+            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+        else:
+            logger.error(f"경험치 제거 명령어 실행 중 오류 발생: {e}", exc_info=True)
+            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"경험치 제거 명령어 실행 중 오류 발생: {e}", exc_info=True)
         await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
@@ -470,13 +449,14 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
             await interaction.response.send_message(
                 f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True
             )
-        elif isinstance(error, discord.errors.Forbidden):
-            logger.error(f"명령어 실행 중 권한 부족: {error}", exc_info=True)
-            message = "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용', '메시지 보내기' 권한을 확인해 달라고 요청하세요."
+        elif isinstance(error, discord.errors.HTTPException) and error.status == 429:
+            bot.rate_limit_until = time.time() + 600
+            bot.is_rate_limited = True
+            logger.warning(f"Rate limit 발생, 10분 대기: {error}")
             if not interaction.response.is_done():
-                await interaction.response.send_message(message, ephemeral=True)
+                await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
             else:
-                await interaction.followup.send(message, ephemeral=True)
+                await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"명령어 실행 중 오류 발생: {error}", exc_info=True)
             message = "명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요."
@@ -493,8 +473,8 @@ async def on_ready():
     logger.info(f'봇이 로그인했어: {bot.user}')
     try:
         bot.db_pool = await init_db()
-        await sync_commands()
-        bot.loop.create_task(process_xp_queue())  # 경험치 큐 처리 시작
+        await sync_commands()  # 한 번만 동기화
+        bot.loop.create_task(process_xp_queue())
     except Exception as e:
         logger.error(f"봇 초기화 중 오류 발생: {e}", exc_info=True)
         raise
