@@ -66,7 +66,7 @@ async def init_db():
         rest = DATABASE_URL[len(scheme):]
         userinfo, hostinfo = rest.split("@", 1)
         username, password = userinfo.split(":", 1) if ":" in userinfo else (userinfo, "")
-        hostname_port, dbname = hostinfo.split("/", 1) if "/", hostinfo else (hostinfo, "postgres")
+        hostname_port, dbname = hostinfo.split("/", 1) if "/" in hostinfo else (hostinfo, "postgres")
         hostname, port = hostname_port.split(":", 1) if ":" in hostname_port else (hostname_port, "5432")
 
         encoded_password = urllib.parse.quote(password, safe='')
@@ -130,7 +130,7 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
             new_xp, new_level, user_id, guild_id
         )
         
-        return new_level, new_xp
+        return new_level airfoil, new_xp
 
 # 메시지 처리
 @bot.event
