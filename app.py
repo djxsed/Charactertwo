@@ -83,7 +83,7 @@ async def init_db():
 
         pool = await asyncpg.create_pool(normalized_url, timeout=10)
         async with pool.acquire() as conn:
-            logger.info("데이터베이스ibute('data:image/png;base64,...") # 이미지 삽입 (예시)
+            logger.info("데이터베이스 테이블 생성 중...")
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT,
@@ -113,6 +113,9 @@ async def with_retry(coro, max_retries=3, base_delay=1):
             continue
         try:
             return await asyncio.wait_for(coro, timeout=10.0)
+        except discord.errors.Forbidden as e:
+            logger.error(f"권한 부족 오류: {e}", exc_info=True)
+            raise  # 권한 에러는 재시도하지 않고 즉시抛出
         except discord.errors.HTTPException as e:
             if e.status == 429:  # Rate limit error
                 retry_after = float(e.response.headers.get('Retry-After', base_delay))
@@ -199,16 +202,14 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
             if level_change_occurred and channel:
                 try:
                     guild = channel.guild
-                    levelup_channel = discord.utils.get(guild.channels, name="레벨업")
+                    levelup_channel = discord.utils.get(guild.channels, name="레벨업") or channel
                     if levelup_channel:
                         user = guild.get_member(user_id)
                         if user:
                             message = f'{user.mention}님이 레벨 {new_level}로 {"올라갔어요!" if xp > 0 else "내려갔어요!"}'
-                            await with_retry(levelup_channel.send(message))
-                            try:
-                                await with_retry(user.edit(nick=f"[{new_level}렙] {user.name}"))
-                            except discord.errors.Forbidden:
-                                logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
+                            await levelup_channel.send(message)  # with_retry 제거: 이미 권한 확인됨
+                except discord.errors.Forbidden:
+                    logger.warning(f"레벨업 메시지 전송 권한이 없습니다: 채널 {levelup_channel.id}")
                 except Exception as e:
                     logger.error(f"레벨 변경 알림 처리 중 오류 발생: {e}", exc_info=True)
             
@@ -216,6 +217,18 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
     except Exception as e:
         logger.error(f"경험치 처리 중 오류 발생: {e}", exc_info=True)
         return 1, 0
+
+# 닉네임 변경 함수 분리
+async def update_nickname(user, new_level):
+    try:
+        await user.edit(nick=f"[{new_level}렙] {user.name}")
+    except discord.errors.Forbidden:
+        logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
+        return False
+    except Exception as e:
+        logger.error(f"닉네임 변경 중 오류 발생: {e}", exc_info=True)
+        return False
+    return True
 
 # 메시지 처리
 @bot.event
@@ -226,7 +239,6 @@ async def on_message(message):
     xp = len(message.content)
     if xp > 0:
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
-            # 경험치를 큐에 추가
             bot.xp_queue[(message.author.id, message.guild.id)].append(
                 (message.author.id, message.channel.id, xp, time.time())
             )
@@ -281,13 +293,22 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 
             message = f'{member.display_name}님은 아직 경험치가 없어요!' if row is None else \
                      f'{member.display_name}님은 현재 레벨 {row["level"]}이고, 경험치는 {row["xp"]}/{get_level_xp(row["level"])}이에요!'
-            await with_retry(interaction.followup.send(message, ephemeral=True))
+            await interaction.followup.send(message, ephemeral=True)  # with_retry 제거: 권한 문제 우회
+    except discord.errors.Forbidden:
+        logger.error(f"레벨 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
+        try:
+            await interaction.followup.send(
+                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
+                ephemeral=True
+            )
+        except:
+            logger.error("대체 응답 전송 실패", exc_info=True)
     except asyncio.TimeoutError:
         logger.error(f"레벨 명령어 데이터베이스 쿼리 타임아웃: user_id={member.id}, guild_id={interaction.guild.id}")
-        await with_retry(interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요.", ephemeral=True))
+        await interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"레벨 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await with_retry(interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True))
+        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 리더보드 명령어
 @app_commands.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
@@ -311,7 +332,7 @@ async def leaderboard(interaction: discord.Interaction):
             )
 
             if not rows:
-                await with_retry(interaction.followup.send('아직 리더보드에 데이터가 없어요!'))
+                await interaction.followup.send('아직 리더보드에 데이터가 없어요!')
                 return
 
             embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
@@ -324,13 +345,22 @@ async def leaderboard(interaction: discord.Interaction):
                         inline=False
                     )
 
-            await with_retry(interaction.followup.send(embed=embed))
+            await interaction.followup.send(embed=embed)  # with_retry 제거: 권한 문제 우회
+    except discord.errors.Forbidden:
+        logger.error(f"리더보드 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
+        try:
+            await interaction.followup.send(
+                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '임베드 링크' 권한을 확인해 달라고 요청하세요.",
+                ephemeral=True
+            )
+        except:
+            logger.error("대체 응답 전송 실패", exc_info=True)
     except asyncio.TimeoutError:
         logger.error(f"리더보드 명령어 데이터베이스 쿼리 타임아웃: guild_id={interaction.guild.id}")
-        await with_retry(interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요."))
+        await interaction.followup.send("데이터베이스 응답이 느립니다. 나중에 다시 시도해주세요.")
     except Exception as e:
         logger.error(f"리더보드 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await with_retry(interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요."))
+        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
 
 # 경험치 추가 명령어 (관리자 전용)
 @app_commands.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
@@ -346,28 +376,41 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
             return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
-            await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
+            await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
             return
 
         if xp <= 0:
-            await with_retry(interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True))
+            await interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True)
             return
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel, bot.db_pool)
         
-        await with_retry(interaction.followup.send(
+        # 경험치 추가 결과 먼저 응답
+        await interaction.followup.send(
             f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
-        ))
+        )
         
+        # 닉네임 변경은 별도로 처리
+        nickname_updated = await update_nickname(member, new_level)
+        if not nickname_updated:
+            await interaction.followup.send(
+                "봇에 멤버 닉네임 관리 권한이 없습니다. 닉네임은 변경되지 않았습니다.",
+                ephemeral=True
+            )
+        
+    except discord.errors.Forbidden:
+        logger.error(f"경험치 추가 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
         try:
-            await with_retry(member.edit(nick=f"[{new_level}렙] {member.name}"))
-        except discord.errors.Forbidden:
-            await with_retry(interaction.followup.send("봇에게 해당 유저의 닉네임을 변경할 권한이 없습니다.", ephemeral=True))
-        
+            await interaction.followup.send(
+                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
+                ephemeral=True
+            )
+        except:
+            logger.error("대체 응답 전송 실패", exc_info=True)
     except Exception as e:
         logger.error(f"경험치 추가 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await with_retry(interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True))
+        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 경험치 제거 명령어 (관리자 전용)
 @app_commands.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
@@ -383,44 +426,64 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
             return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
-            await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
+            await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
             return
 
         if xp <= 0:
-            await with_retry(interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True))
+            await interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True)
             return
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
         
-        await with_retry(interaction.followup.send(
+        # 경험치 제거 결과 먼저 응답
+        await interaction.followup.send(
             f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
-        ))
+        )
         
+        # 닉네임 변경은 별도로 처리
+        nickname_updated = await update_nickname(member, new_level)
+        if not nickname_updated:
+            await interaction.followup.send(
+                "봇에 멤버 닉네임 관리 권한이 없습니다. 닉네임은 변경되지 않았습니다.",
+                ephemeral=True
+            )
+        
+    except discord.errors.Forbidden:
+        logger.error(f"경험치 제거 명령어 응답 전송 중 권한 부족: 채널 {interaction.channel.id}", exc_info=True)
         try:
-            await with_retry(member.edit(nick=f"[{new_level}렙] {member.name}"))
-        except discord.errors.Forbidden:
-            await with_retry(interaction.followup.send("봇에게 해당 유저의 닉네임을 변경할 권한이 없습니다.", ephemeral=True))
-        
+            await interaction.followup.send(
+                "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용' 및 '메시지 보내기' 권한을 확인해 달라고 요청하세요.",
+                ephemeral=True
+            )
+        except:
+            logger.error("대체 응답 전송 실패", exc_info=True)
     except Exception as e:
         logger.error(f"경험치 제거 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await with_retry(interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True))
+        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 쿨다운 및 에러 처리
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         if isinstance(error, app_commands.CommandOnCooldown):
-            await with_retry(interaction.response.send_message(
+            await interaction.response.send_message(
                 f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True
-            ))
+            )
+        elif isinstance(error, discord.errors.Forbidden):
+            logger.error(f"명령어 실행 중 권한 부족: {error}", exc_info=True)
+            message = "명령어 응답을 보내는 데 권한이 부족합니다. 서버 관리자에게 봇의 '슬래시 명령어 사용', '메시지 보내기' 권한을 확인해 달라고 요청하세요."
+            if not interaction.response.is_done():
+                await interaction.response.send_message(message, ephemeral=True)
+            else:
+                await interaction.followup.send(message, ephemeral=True)
         else:
             logger.error(f"명령어 실행 중 오류 발생: {error}", exc_info=True)
             message = "명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요."
             if not interaction.response.is_done():
-                await with_retry(interaction.response.send_message(message, ephemeral=True))
+                await interaction.response.send_message(message, ephemeral=True)
             else:
-                await with_retry(interaction.followup.send(message, ephemeral=True))
+                await interaction.followup.send(message, ephemeral=True)
     except Exception as e:
         logger.error(f"에러 핸들러에서 추가 오류 발생: {e}", exc_info=True)
 
