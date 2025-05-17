@@ -118,7 +118,11 @@ async def with_retry(coro, max_retries=3, base_delay=1):
         except discord.errors.HTTPException as e:
             if e.status == 429:  # Rate limit error
                 retry_after = float(e.response.headers.get('Retry-After', base_delay))
-                if 'X-RateLimit-Scope' in e.response.headers and e.response.headers['X-RateLimit-Scope'] == 'global':
+                # Cloudflare 429 에러 처리
+                if "cloudflare" in str(e).lower():
+                    retry_after = 600  # Cloudflare는 Retry-After를 안 줄 수 있으므로 기본 10분
+                    logger.warning("Cloudflare Rate Limit 감지, 10분 대기")
+                elif 'X-RateLimit-Scope' in e.response.headers and e.response.headers['X-RateLimit-Scope'] == 'global':
                     bot.rate_limit_until = time.time() + retry_after
                     bot.is_rate_limited = True
                     logger.warning(f"글로벌 rate limit 발생, {retry_after:.2f}초 대기")
@@ -127,6 +131,8 @@ async def with_retry(coro, max_retries=3, base_delay=1):
                 if retry_after > 600:  # 10분 이상 대기는 비정상, 최대 10분으로 제한
                     retry_after = 600
                     logger.warning("Retry-After가 비정상적으로 큼, 600초로 제한")
+                bot.rate_limit_until = time.time() + retry_after
+                bot.is_rate_limited = True
                 await asyncio.sleep(retry_after + random.uniform(0.1, 0.5))
                 if attempt == max_retries - 1:
                     raise
@@ -162,7 +168,7 @@ async def process_nickname_queue():
             if bot.nickname_queue and not bot.is_rate_limited:
                 user, new_level, _ = bot.nickname_queue.pop(0)
                 try:
-                    await user.edit(nick=f"[{new_level}렙] {user.name}")
+                    await with_retry(user.edit(nick=f"[{new_level}렙] {user.name}"))
                 except discord.errors.Forbidden:
                     logger.warning(f"닉네임 변경 권한이 없습니다: {user.id}")
                 except discord.errors.HTTPException as e:
@@ -229,7 +235,7 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
                         user = guild.get_member(user_id)
                         if user:
                             message = f'{user.mention}님이 레벨 {new_level}로 {"올라갔어요!" if xp > 0 else "내려갔어요!"}'
-                            await levelup_channel.send(message)
+                            await with_retry(levelup_channel.send(message))
                 except Exception as e:
                     logger.error(f"레벨 변경 알림 처리 중 오류 발생: {e}", exc_info=True)
             
@@ -306,19 +312,22 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 
             message = f'{member.display_name}님은 아직 경험치가 없어요!' if row is None else \
                      f'{member.display_name}님은 현재 레벨 {row["level"]}이고, 경험치는 {row["xp"]}/{get_level_xp(row["level"])}이에요!'
-            await interaction.followup.send(message, ephemeral=True)
+            await with_retry(interaction.followup.send(message, ephemeral=True))
     except discord.errors.HTTPException as e:
         if e.status == 429:
             bot.rate_limit_until = time.time() + 600  # 10분 대기
             bot.is_rate_limited = True
             logger.warning(f"Rate limit 발생, 10분 대기: {e}")
-            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"레벨 명령어 실행 중 오류 발생: {e}", exc_info=True)
-            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"레벨 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 리더보드 명령어
 @app_commands.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
@@ -342,7 +351,7 @@ async def leaderboard(interaction: discord.Interaction):
             )
 
             if not rows:
-                await interaction.followup.send('아직 리더보드에 데이터가 없어요!')
+                await with_retry(interaction.followup.send('아직 리더보드에 데이터가 없어요!'))
                 return
 
             embed = discord.Embed(title=f"{interaction.guild.name} 리더보드", color=discord.Color.blue())
@@ -355,19 +364,22 @@ async def leaderboard(interaction: discord.Interaction):
                         inline=False
                     )
 
-            await interaction.followup.send(embed=embed)
+            await with_retry(interaction.followup.send(embed=embed))
     except discord.errors.HTTPException as e:
         if e.status == 429:
             bot.rate_limit_until = time.time() + 600
             bot.is_rate_limited = True
             logger.warning(f"Rate limit 발생, 10분 대기: {e}")
-            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"리더보드 명령어 실행 중 오류 발생: {e}", exc_info=True)
-            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
     except Exception as e:
         logger.error(f"리더보드 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
+        if not interaction.response.is_done():
+            await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.")
 
 # 경험치 추가 명령어 (관리자 전용)
 @app_commands.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
@@ -383,39 +395,42 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
             return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
-            await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+            await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
             return
 
         if xp <= 0:
-            await interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True)
+            await with_retry(interaction.followup.send("추가할 경험치는 양수여야 합니다!", ephemeral=True))
             return
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel, bot.db_pool)
         
-        await interaction.followup.send(
+        await with_retry(interaction.followup.send(
             f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
-        )
+        ))
         
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
-            await interaction.followup.send(
+            await with_retry(interaction.followup.send(
                 "닉네임 변경 요청이 큐에 추가되었으나 오류가 발생했습니다.",
                 ephemeral=True
-            )
+            ))
         
     except discord.errors.HTTPException as e:
         if e.status == 429:
             bot.rate_limit_until = time.time() + 600
             bot.is_rate_limited = True
             logger.warning(f"Rate limit 발생, 10분 대기: {e}")
-            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"경험치 추가 명령어 실행 중 오류 발생: {e}", exc_info=True)
-            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"경험치 추가 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 경험치 제거 명령어 (관리자 전용)
 @app_commands.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
@@ -431,65 +446,65 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
             return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
-            await interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True)
+            await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
             return
 
         if xp <= 0:
-            await interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True)
+            await with_retry(interaction.followup.send("제거할 경험치는 양수여야 합니다!", ephemeral=True))
             return
 
         new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
         
-        await interaction.followup.send(
+        await with_retry(interaction.followup.send(
             f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}',
             ephemeral=True
-        )
+        ))
         
         nickname_updated = await update_nickname(member, new_level)
         if not nickname_updated:
-            await interaction.followup.send(
+            await with_retry(interaction.followup.send(
                 "닉네임 변경 요청이 큐에 추가되었으나 오류가 발생했습니다.",
                 ephemeral=True
-            )
+            ))
         
     except discord.errors.HTTPException as e:
         if e.status == 429:
             bot.rate_limit_until = time.time() + 600
             bot.is_rate_limited = True
             logger.warning(f"Rate limit 발생, 10분 대기: {e}")
-            await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"경험치 제거 명령어 실행 중 오류 발생: {e}", exc_info=True)
-            await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+            if not interaction.response.is_done():
+                await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"경험치 제거 명령어 실행 중 오류 발생: {e}", exc_info=True)
-        await interaction.followup.send("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
 
 # 쿨다운 및 에러 처리
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     try:
         if isinstance(error, app_commands.CommandOnCooldown):
-            await interaction.response.send_message(
-                f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True
-            )
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True
+                )
         elif isinstance(error, discord.errors.HTTPException) and error.status == 429:
             bot.rate_limit_until = time.time() + 600
             bot.is_rate_limited = True
             logger.warning(f"Rate limit 발생, 10분 대기: {error}")
             if not interaction.response.is_done():
                 await interaction.response.send_message("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
-            else:
-                await interaction.followup.send("Rate Limit에 걸렸습니다. 약 10분 후 다시 시도해주세요.", ephemeral=True)
         else:
             logger.error(f"명령어 실행 중 오류 발생: {error}", exc_info=True)
-            message = "명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요."
             if not interaction.response.is_done():
-                await interaction.response.send_message(message, ephemeral=True)
-            else:
-                await interaction.followup.send(message, ephemeral=True)
+                await interaction.response.send_message("명령어 실행 중 오류가 발생했습니다. 나중에 다시 시도해주세요.", ephemeral=True)
     except Exception as e:
         logger.error(f"에러 핸들러에서 추가 오류 발생: {e}", exc_info=True)
+        # 추가적인 API 호출을 하지 않도록 여기서 더 이상 메시지를 보내지 않음
 
 # 봇 시작 시 실행
 @bot.event
