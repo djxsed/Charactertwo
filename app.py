@@ -83,7 +83,7 @@ async def init_db():
 
         pool = await asyncpg.create_pool(normalized_url, timeout=10)
         async with pool.acquire() as conn:
-            logger.info("데이터베이스ibute('data:image/png;base64,...') # 이미지 삽입 (예시)
+            logger.info("데이터베이스ibute('data:image/png;base64,...") # 이미지 삽입 (예시)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT,
