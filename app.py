@@ -7,11 +7,31 @@ from dotenv import load_dotenv
 import asyncpg
 import urllib.parse
 import re
+import logging
+from aiohttp import web
+import uuid
+
+# 로깅 설정
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 # 환경 변수 불러오기
 load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
+PORT = int(os.getenv("PORT", 8000))  # Render에서 제공하는 PORT, 기본값 8000
+
+# 환경 변수 유효성 검사
+if not DISCORD_TOKEN:
+    logger.error("DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
+    raise ValueError("DISCORD_TOKEN 환경 변수가 설정되지 않았습니다.")
+if not DATABASE_URL:
+    logger.error("DATABASE_URL 환경 변수가 설정되지 않았습니다.")
+    raise ValueError("DATABASE_URL 환경 변수가 설정되지 않았습니다.")
 
 # 봇 설정
 intents = discord.Intents.default()
@@ -20,11 +40,23 @@ intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
 
+# aiohttp 웹 서버 설정
+async def handle_root(request):
+    return web.Response(text="Discord Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.add_routes([web.get('/', handle_root)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', PORT)
+    await site.start()
+    logger.info(f"Web server running on port {PORT}")
+
 # 데이터베이스 초기화
 async def init_db():
     try:
-        if not DATABASE_URL:
-            raise ValueError("DATABASE_URL 환경 변수가 설정되지 않았습니다.")
+        logger.info("데이터베이스 초기화를 시작합니다...")
 
         # DATABASE_URL 디버깅 출력 (비밀번호 마스킹)
         masked_url = DATABASE_URL
@@ -35,11 +67,12 @@ async def init_db():
                 if ":" in userinfo:
                     user, _ = userinfo.split(":", 1)
                     masked_url = f"{scheme}://{user}:[REDACTED]@{hostinfo}"
-        print(f"Raw DATABASE_URL: {masked_url}")
+        logger.info(f"Raw DATABASE_URL: {masked_url}")
 
         # 비밀번호에 특수 문자가 포함된 경우를 처리하기 위해 URL 정규화
         scheme_match = re.match(r"^(postgresql|postgres)://", DATABASE_URL, re.IGNORECASE)
         if not scheme_match:
+            logger.error("DATABASE_URL은 'postgresql://' 또는 'postgres://'로 시작해야 합니다.")
             raise ValueError("DATABASE_URL은 'postgresql://' 또는 'postgres://'로 시작해야 합니다.")
 
         scheme = scheme_match.group(0)
@@ -52,10 +85,11 @@ async def init_db():
         encoded_password = urllib.parse.quote(password, safe='')
         normalized_url = f"postgresql://{username}:{encoded_password}@{hostname}:{port}/{dbname}"
 
-        print(f"Normalized DATABASE_URL: {normalized_url}")
+        logger.info(f"Normalized DATABASE_URL: {normalized_url}")
 
         pool = await asyncpg.create_pool(normalized_url)
         async with pool.acquire() as conn:
+            logger.info("데이터베이스 테이블 생성 중...")
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT,
@@ -65,9 +99,10 @@ async def init_db():
                     PRIMARY KEY (user_id, guild_id)
                 )
             ''')
+        logger.info("데이터베이스 초기화 완료.")
         return pool
     except Exception as e:
-        print(f"데이터베이스 초기화 오류: {e}")
+        logger.error(f"데이터베이스 초기화 오류: {e}")
         raise
 
 # 경험치와 레벨 계산
@@ -121,7 +156,7 @@ async def on_message(message):
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
             await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
         else:
-            print("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
+            logger.warning("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
     
     await bot.process_commands(message)
 
@@ -210,19 +245,36 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     if isinstance(error, app_commands.CommandOnCooldown):
         await interaction.response.send_message(f"{error.retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
     else:
+        logger.error(f"명령어 실행 중 오류 발생: {error}")
         raise error
 
 # 봇 시작 시 실행
 @bot.event
 async def on_ready():
-    print(f'봇이 로그인했어: {bot.user}')
+    logger.info(f'봇이 로그인했어: {bot.user}')
     bot.db_pool = await init_db()
     try:
         synced = await bot.tree.sync()
-        print(f'명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨')
+        logger.info(f'명령어가 동기화되었어: {len(synced)}개의 명령어 등록됨')
     except Exception as e:
-        print(f'명령어 동기화 실패: {e}')
+        logger.error(f'명령어 동기화 실패: {e}')
+        raise
 
-# 봇 실행
+# 봇과 웹 서버를 동시에 실행
+async def main():
+    try:
+        # 웹 서버 시작
+        await start_web_server()
+        # Discord 봇 시작
+        await bot.start(DISCORD_TOKEN)
+    except Exception as e:
+        logger.error(f"봇 또는 웹 서버 실행 중 오류 발생: {e}")
+        raise
+
 if __name__ == "__main__":
-    bot.run(DISCORD_TOKEN)
+    try:
+        logger.info("봇과 웹 서버를 시작합니다...")
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"프로그램 실행 중 오류 발생: {e}")
+        raise
