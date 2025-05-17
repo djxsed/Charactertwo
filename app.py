@@ -12,6 +12,7 @@ from aiohttp import web
 import uuid
 import time
 import random
+from collections import defaultdict
 
 # 로깅 설정
 logging.basicConfig(
@@ -41,6 +42,10 @@ intents.guilds = True
 intents.members = True
 intents.message_content = True
 bot = commands.Bot(command_prefix='/', intents=intents)
+
+# Rate Limit 관리
+bot.rate_limit_until = 0  # 글로벌 rate limit 해제 시간
+bot.xp_queue = defaultdict(list)  # 경험치 큐: (user_id, guild_id, xp, timestamp)
 
 # aiohttp 웹 서버 설정
 async def handle_root(request):
@@ -76,9 +81,9 @@ async def init_db():
 
         logger.info(f"Normalized DATABASE_URL: {normalized_url}")
 
-        pool = await asyncpg.create_pool(normalized_url, timeout=10)  # 타임아웃 설정 추가
+        pool = await asyncpg.create_pool(normalized_url, timeout=10)
         async with pool.acquire() as conn:
-            logger.info("데이터베이스 테이블 생성 중...")
+            logger.info("데이터베이스ibute('data:image/png;base64,...') # 이미지 삽입 (예시)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT,
@@ -101,13 +106,25 @@ def get_level_xp(level):
 # API 호출에 재시도 로직 추가
 async def with_retry(coro, max_retries=3, base_delay=1):
     for attempt in range(max_retries):
+        if time.time() < bot.rate_limit_until:
+            retry_after = bot.rate_limit_until - time.time()
+            logger.warning(f"글로벌 rate limit 적용 중, {retry_after:.2f}초 후 재시도")
+            await asyncio.sleep(retry_after)
+            continue
         try:
-            return await asyncio.wait_for(coro, timeout=10.0)  # 타임아웃 추가
+            return await asyncio.wait_for(coro, timeout=10.0)
         except discord.errors.HTTPException as e:
             if e.status == 429:  # Rate limit error
-                retry_after = float(e.response.headers.get('Retry-After', base_delay)) + random.uniform(0.1, 0.5)
-                logger.warning(f"Rate limit hit, retrying after {retry_after:.2f} seconds (attempt {attempt + 1}/{max_retries})")
-                await asyncio.sleep(retry_after)
+                retry_after = float(e.response.headers.get('Retry-After', base_delay))
+                if 'X-RateLimit-Scope' in e.response.headers and e.response.headers['X-RateLimit-Scope'] == 'global':
+                    bot.rate_limit_until = time.time() + retry_after
+                    logger.warning(f"글로벌 rate limit 발생, {retry_after:.2f}초 대기")
+                else:
+                    logger.warning(f"로컬 rate limit 발생, {retry_after:.2f}초 후 재시도 (시도 {attempt + 1}/{max_retries})")
+                if retry_after > 600:  # 10분 이상 대기는 비정상, 최대 10분으로 제한
+                    retry_after = 600
+                    logger.warning("Retry-After가 비정상적으로 큼, 600초로 제한")
+                await asyncio.sleep(retry_after + random.uniform(0.1, 0.5))
                 if attempt == max_retries - 1:
                     raise
             else:
@@ -120,6 +137,20 @@ async def with_retry(coro, max_retries=3, base_delay=1):
         except Exception as e:
             logger.error(f"예외 발생: {e}", exc_info=True)
             raise
+
+async def process_xp_queue():
+    """주기적으로 경험치 큐를 처리"""
+    while True:
+        try:
+            if bot.db_pool and bot.xp_queue:
+                for (user_id, guild_id), entries in list(bot.xp_queue.items()):
+                    total_xp = sum(xp for _, _, xp, _ in entries)
+                    channel = bot.get_channel(entries[0][1])  # 첫 번째 메시지의 채널 사용
+                    await add_xp(user_id, guild_id, total_xp, channel, bot.db_pool)
+                    del bot.xp_queue[(user_id, guild_id)]
+        except Exception as e:
+            logger.error(f"경험치 큐 처리 중 오류: {e}", exc_info=True)
+        await asyncio.sleep(10)  # 10초마다 큐 처리
 
 async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
     try:
@@ -195,12 +226,12 @@ async def on_message(message):
     xp = len(message.content)
     if xp > 0:
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
-            try:
-                await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
-            except Exception as e:
-                logger.error(f"메시지 처리 중 경험치 추가 오류: {e}", exc_info=True)
+            # 경험치를 큐에 추가
+            bot.xp_queue[(message.author.id, message.guild.id)].append(
+                (message.author.id, message.channel.id, xp, time.time())
+            )
         else:
-            logger.warning("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
+            logger.warning("db_pool이 아직 준비되지 않았습니다.")
 
     await bot.process_commands(message)
 
@@ -231,7 +262,13 @@ async def sync_commands():
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def level(interaction: discord.Interaction, member: discord.Member = None):
     try:
-        await interaction.response.defer(ephemeral=True)  # ephemeral=True로 비공개 응답
+        if time.time() < bot.rate_limit_until:
+            await interaction.response.send_message(
+                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
         member = member or interaction.user
         async with bot.db_pool.acquire() as conn:
             row = await asyncio.wait_for(
@@ -239,7 +276,7 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
                     'SELECT xp, level FROM users WHERE user_id = $1 AND guild_id = $2',
                     member.id, interaction.guild.id
                 ),
-                timeout=5.0  # 데이터베이스 쿼리 타임아웃
+                timeout=5.0
             )
 
             message = f'{member.display_name}님은 아직 경험치가 없어요!' if row is None else \
@@ -257,6 +294,12 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def leaderboard(interaction: discord.Interaction):
     try:
+        if time.time() < bot.rate_limit_until:
+            await interaction.response.send_message(
+                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                ephemeral=True
+            )
+            return
         await interaction.response.defer()
         async with bot.db_pool.acquire() as conn:
             rows = await asyncio.wait_for(
@@ -264,7 +307,7 @@ async def leaderboard(interaction: discord.Interaction):
                     'SELECT user_id, xp, level FROM users WHERE guild_id = $1 ORDER BY level DESC, xp DESC LIMIT 5',
                     interaction.guild.id
                 ),
-                timeout=5.0  # 데이터베이스 쿼리 타임아웃
+                timeout=5.0
             )
 
             if not rows:
@@ -295,6 +338,12 @@ async def leaderboard(interaction: discord.Interaction):
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     try:
+        if time.time() < bot.rate_limit_until:
+            await interaction.response.send_message(
+                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                ephemeral=True
+            )
+            return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
             await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
@@ -326,6 +375,12 @@ async def add_xp_command(interaction: discord.Interaction, member: discord.Membe
 @app_commands.checks.cooldown(1, 10.0, key=lambda i: (i.guild_id, i.user.id))
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
     try:
+        if time.time() < bot.rate_limit_until:
+            await interaction.response.send_message(
+                f"현재 API rate limit에 걸려 있습니다. 약 {(bot.rate_limit_until - time.time())/60:.1f}분 후 다시 시도해주세요.",
+                ephemeral=True
+            )
+            return
         await interaction.response.defer(ephemeral=True)
         if interaction.channel.name != "관리실":
             await with_retry(interaction.followup.send("이 명령어는 관리실 채널에서만 사용할 수 있습니다!", ephemeral=True))
@@ -376,6 +431,7 @@ async def on_ready():
     try:
         bot.db_pool = await init_db()
         await sync_commands()
+        bot.loop.create_task(process_xp_queue())  # 경험치 큐 처리 시작
     except Exception as e:
         logger.error(f"봇 초기화 중 오류 발생: {e}", exc_info=True)
         raise
