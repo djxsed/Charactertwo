@@ -117,7 +117,7 @@ await conn.execute(
 new_xp, new_level, user_id, guild_id
 )
 return new_level, new_xp
-메시지 처리
+# 메시지 처리
 @bot.event
 async def on_message(message):
 if message.author.bot or not message.guild:
@@ -133,10 +133,10 @@ await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_po
 else:
 print("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
 await bot.process_commands(message)
-레벨 확인 명령어
+ # 레벨 확인 명령어
 @bot.tree.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
 async def level(interaction: discord.Interaction, member: discord.Member = None):
-쿨다운 체크
+# 쿨다운 체크
 bucket = cooldown.get_bucket(interaction)
 retry_after = bucket.update_rate_limit()
 if retry_after:
@@ -893,7 +893,7 @@ character_id = str(uuid.uuid4())
 await queue_flex_task(character_id, description, str(user.id), str(channel.id), None, "character_check", prompt)
 await save_result(character_id, description, False, "심사 중", None, str(user.id), answers.get("이름"), answers.get("종족"), answers.get("나이"), answers.get("성별"), None, answers.get("포스트 이름"))
 await send_message_with_retry(channel, f"{user.mention} ⏳ 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
-캐릭터 수정 명령어
+# 캐릭터 수정 명령어
 @bot.tree.command(name="캐릭터_수정", description="등록된 캐릭터를 수정해! 잘못된 캐릭터 이름을 입력하면 안돼!")
 async def character_edit(interaction: discord.Interaction, post_name: str):
 user = interaction.user
@@ -1349,7 +1349,7 @@ description=description
 )
 await queue_flex_task(character_id, description, str(user.id), str(channel.id), thread_id, "character_check", prompt)
 await send_message_with_retry(channel, f"{user.mention} ⏳ 수정 심사 중이야! 곧 결과 알려줄게~ 😊", is_interaction=True, interaction=interaction)
-캐릭터 목록 명령어
+# 캐릭터 목록 명령어
 @bot.tree.command(name="캐릭터_목록", description="등록된 캐릭터 목록을 확인해!")
 async def character_list(interaction: discord.Interaction):
 user = interaction.user
@@ -1362,7 +1362,7 @@ await interaction.response.send_message("등록된 캐릭터가 없어! /캐릭�
 return
 char_list = "\n".join([f"- {c['character_name']} (포스트: {c['post_name']})" for c in characters])
 await interaction.response.send_message(f"너의 캐릭터 목록:\n{char_list}", ephemeral=True)
-봇 시작 시 실행
+# 봇 시작 시 실행
 @bot.event
 async def on_ready():
 global bot  # Declare bot as global at the start
