@@ -64,9 +64,9 @@ userinfo, hostinfo = rest.split("@", 1)
 username, password = userinfo.split(":", 1) if ":" in userinfo else (userinfo, "")
 hostname_port, dbname = hostinfo.split("/", 1) if "/" in hostinfo else (hostinfo, "postgres")
 hostname, port = hostname_port.split(":", 1) if ":" in hostname_port else (hostname_port, "5432")
-비밀번호 URL 인코딩
+# 비밀번호 URL 인코딩
 encoded_password = urllib.parse.quote(password, safe='')
-정규화된 URL 재구성
+# 정규화된 URL 재구성
 normalized_url = f"postgresql://{username}:{encoded_password}@{hostname}:{port}/{dbname}"
 print(f"Normalized DATABASE_URL: {normalized_url}")
 asyncpg 풀 생성
@@ -85,7 +85,7 @@ return pool
 except Exception as e:
 print(f"데이터베이스 초기화 오류: {e}")
 raise
-경험치와 레벨 계산
+# 경험치와 레벨 계산
 def get_level_xp(level):
 return level * 200  # 레벨당 필요한 경험치
 async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
@@ -154,10 +154,10 @@ await send_message_with_retry(interaction, f'{member.display_name}님은 아직 
 else:
 xp, level = row['xp'], row['level']
 await send_message_with_retry(interaction, f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
-리더보드 명령어
+# 리더보드 명령어
 @bot.tree.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
 async def leaderboard(interaction: discord.Interaction):
-쿨다운 체크
+# 쿨다운 체크
 bucket = cooldown.get_bucket(interaction)
 retry_after = bucket.update_rate_limit()
 if retry_after:
@@ -182,11 +182,11 @@ value=f"레벨 {row['level']} | XP: {row['xp']}/{get_level_xp(row['level'])}",
 inline=False
 )
 await send_message_with_retry(interaction, embed=embed)
-경험치 추가 명령어 (관리자 전용)
+# 경험치 추가 명령어 (관리자 전용)
 @bot.tree.command(name="경험치추가", description="관리실에서 경험치를 추가해! (관리자 전용)")
 @commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def add_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
-쿨다운 체크
+# 쿨다운 체크
 bucket = cooldown.get_bucket(interaction)
 retry_after = bucket.update_rate_limit()
 if retry_after:
@@ -201,11 +201,11 @@ await send_message_with_retry(interaction, "추가할 경험치는 양수여야 
 return
 new_level, new_xp = await add_xp(member.id, interaction.guild.id, xp, interaction.channel)
 await send_message_with_retry(interaction, f'{member.display_name}님에게 {xp}만큼의 경험치를 추가했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
-경험치 제거 명령어 (관리자 전용)
+# 경험치 제거 명령어 (관리자 전용)
 @bot.tree.command(name="경험치제거", description="관리실에서 경험치를 제거해! (관리자 전용)")
 @commands.has_permissions(administrator=True)  # 관리자 권한 체크
 async def remove_xp_command(interaction: discord.Interaction, member: discord.Member, xp: int):
-쿨다운 체크
+# 쿨다운 체크
 bucket = cooldown.get_bucket(interaction)
 retry_after = bucket.update_rate_limit()
 if retry_after:
@@ -731,7 +731,7 @@ print(f"Error processing flex task: {str(e)}")
 await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
 task["status"] = "failed"
 await asyncio.sleep(1)
-버튼 뷰 클래스
+# 버튼 뷰 클래스
 class SelectionView(discord.ui.View):
 def init(self, options, field, user, callback):
 super().init(timeout=600.0)
@@ -760,7 +760,7 @@ else:
 channel = bot.get_channel(self.user.dm_channel.id if self.user.dm_channel else self.user.id)
 if channel:
 await channel.send(f"{self.user.mention} ❌ 10분 동안 응답이 없어 신청이 취소됐어요. /캐릭터_신청 명령어로 다시 시도해주세요! 🥹")
-캐릭터 신청 명령어
+# 캐릭터 신청 명령어
 @bot.tree.command(name="캐릭터_신청", description="캐릭터를 신청해! 순차적으로 질문에 답해줘~")
 async def character_apply(interaction: discord.Interaction):
 user = interaction.user
