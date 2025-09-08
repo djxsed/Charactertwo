@@ -58,12 +58,10 @@ async def init_db():
                     masked_url = f"{scheme}://{user}:[REDACTED]@{hostinfo}"
         print(f"Raw DATABASE_URL: {masked_url}")
 
-        # 비밀번호에 특수 문자가 포함된 경우를 처리하기 위해 URL 정규화
         scheme_match = re.match(r"^(postgresql|postgres)://", DATABASE_URL, re.IGNORECASE)
         if not scheme_match:
             raise ValueError("DATABASE_URL은 'postgresql://' 또는 'postgres://'로 시작해야 합니다.")
 
-        # URL을 수동으로 분리하여 비밀번호 인코딩
         scheme = scheme_match.group(0)
         rest = DATABASE_URL[len(scheme):]
         userinfo, hostinfo = rest.split("@", 1)
@@ -76,7 +74,6 @@ async def init_db():
         normalized_url = f"postgresql://{username}:{encoded_password}@{hostname}:{port}/{dbname}"
         print(f"Normalized DATABASE_URL: {normalized_url}")
 
-        # asyncpg 풀 생성
         pool = await asyncpg.create_pool(normalized_url)
         async with pool.acquire() as conn:
             await conn.execute('''
@@ -93,7 +90,6 @@ async def init_db():
         print(f"데이터베이스 초기화 오류: {e}")
         raise
 
-# 경험치와 레벨 계산
 def get_level_xp(level):
     return level * 200  # 레벨당 필요한 경험치
 
@@ -241,7 +237,6 @@ async def remove_xp_command(interaction: discord.Interaction, member: discord.Me
     new_level, new_xp = await add_xp(member.id, interaction.guild.id, -xp, interaction.channel, bot.db_pool)
     await send_message_with_retry(interaction, f'{member.display_name}님에게서 {xp}만큼의 경험치를 제거했습니다! 현재 레벨: {new_level}, 경험치: {new_xp}/{get_level_xp(new_level)}')
 
-# 캐릭터 심사 시스템 상수 정의
 BANNED_WORDS = ["악마", "천사", "이세계", "드래곤"]
 MIN_LENGTH = 50
 REQUIRED_FIELDS = ["이름:", "나이:", "성격:"]
@@ -256,54 +251,7 @@ AGE_PATTERN = r"나이:\s*(\d+)"
 
 # 기본 프롬프트
 DEFAULT_PROMPT = """
-디스코드 역할극 서버의 캐릭터 심사 봇이야. 캐릭터 설명을 보고:
 
-1. 서버 규칙에 맞는지 판단해.
-2. 캐릭터가 {allowed_roles} 중 하나인지 정해.
-3. 캐릭터가 설정과 스탯표에 부합하는지 판단해.
-간결하게 50자 이내로 답변해.
-
-규칙:
-- 금지 단어: {banned_words} (이미 확인됨).
-- 필수 항목: {required_fields} (이미 확인됨).
-- 허용 종족: {allowed_races}.
-- 속성: 체력, 지능, 이동속도, 힘(1~6), 냉철(1~4), 기술/마법/요력 위력(1~6) (이미 확인됨).
-- 설명은 역할극에 적합해야 하며, 간단한 일상적 배경도 허용.
-- 시간/현실 조작 능력 금지.
-- 과거사: 시간 여행, 초자연적 능력(마법 제외), 비현실적 사건(예: 세계 구함, 우주 정복) 금지.
-- 나이: 1~5000살 (이미 확인됨).
-- 소속: A.M.L, 하람고, 하람고등학교만 허용.
-- 속성 합산: 인간 5~18, 마법사 5~19, 요괴 5~20.
-- 학년 및 반은 'x-y반', 'x학년 y반', 'x/y반' 형식만 인정.
-- 기술/마법/요력 위력은 1~6만 허용.
-- 기술/마법/요력 개수는 6개 이하.
-- 기술/마법/요력의 위력이 4이면 쿨타임이 15초 이상.
-- 기술/마법/요력의 위력이 5이면 쿨타임이 20초 이상.
-- 기술/마법/요력의 위력이 6이면 쿨타임이 40초 이상.
-- 기술/마법/요력의 지속 시간은 39초를 초과할 수 없음.
-- 키/몸무게: 100m 이상의 키, 100000kg 이상의 몸무게 금지.
-- 학년 및 반은 학년별로 3반이 최대.
-- 요괴 종족은 AML 소속 불가 (숨김은 허용).
-
-역할 판단:
-- 소속에 'AML' 포함 → AML.
-- 소속에 '선생'/'선생님' 포함 → 선생님.
-- 소속에 '학생' 포함 → 학생.
-- 모호하면 실패.
-
-설정:
-- 마법 실제 존재.
-- 2050년 미래.
-- 하람고등학교: 학생/요괴/마법사 공존.
-- AML은 요괴와 마법사를 증오.
-
-스탯표:
-- 지능: 1=IQ60~80, 2=90, 3=100, 4=120, 5=150, 6=180
-- 힘: 1=29kg 이하, 2=30kg, 3=50kg, 4=125kg, 5=300kg, 6=600kg
-- 이동속도: 1=100m in 41s, 2=40~26s, 3=25~20s, 4=19~13s, 5=12~6s, 6=5~3s
-- 냉철: 1=원초적 감정, 2=평범한 청소년, 3=격한 감정 무시, 4=감정 동요 없음
-- 체력: 1=간신히 생존, 2=운동 부족, 3=평범한 청소년, 4=운동선수, 5=초인적 맷집, 6=인간 한계 초월
-- 능력/마법/기술 위력: 1=피해 없음, 2=경미한 상처, 3=깊은 상처, 4=작은 콘크리트 파괴, 5=큰 콘크리트 파괴, 6=작은 건물 파괴
 
 캐릭터 설명:
 {description}
