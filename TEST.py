@@ -47,17 +47,6 @@ async def init_db():
         if not DATABASE_URL:
             raise ValueError("DATABASE_URL 환경 변수가 설정되지 않았습니다.")
 
-        # DATABASE_URL 디버깅 출력 (비밀번호 마스킹)
-        masked_url = DATABASE_URL
-        if "://" in DATABASE_URL:
-            scheme, rest = DATABASE_URL.split("://", 1)
-            if "@" in rest:
-                userinfo, hostinfo = rest.split("@", 1)
-                if ":" in userinfo:
-                    user, _ = userinfo.split(":", 1)
-                    masked_url = f"{scheme}://{user}:[REDACTED]@{hostinfo}"
-        print(f"Raw DATABASE_URL: {masked_url}")
-
         scheme_match = re.match(r"^(postgresql|postgres)://", DATABASE_URL, re.IGNORECASE)
         if not scheme_match:
             raise ValueError("DATABASE_URL은 'postgresql://' 또는 'postgres://'로 시작해야 합니다.")
@@ -72,7 +61,6 @@ async def init_db():
         # 비밀번호 URL 인코딩
         encoded_password = urllib.parse.quote(password, safe='')
         normalized_url = f"postgresql://{username}:{encoded_password}@{hostname}:{port}/{dbname}"
-        print(f"Normalized DATABASE_URL: {normalized_url}")
 
         pool = await asyncpg.create_pool(normalized_url)
         async with pool.acquire() as conn:
@@ -87,7 +75,7 @@ async def init_db():
             ''')
         return pool
     except Exception as e:
-        print(f"데이터베이스 초기화 오류: {e}")
+        raise RuntimeError(f"데이터베이스 초기화 오류: {e}")
         raise
 
 def get_level_xp(level):
@@ -117,7 +105,7 @@ async def add_xp(user_id, guild_id, xp, channel=None, pool=None):
                 if levelup_channel:
                     user = channel.guild.get_member(user_id)
                     await levelup_channel.send(f'{user.mention}님이 레벨 {new_level}로 올라갔어요!')
-        new_xp = max(0, new_xp)
+        new_xp = max(0, new_xp)  # 음수 방지
         await conn.execute(
             'UPDATE users SET xp = $1, level = $2 WHERE user_id = $3 AND guild_id = $4',
             new_xp, new_level, user_id, guild_id
@@ -140,16 +128,26 @@ async def on_message(message):
         if hasattr(bot, 'db_pool') and bot.db_pool is not None:
             await add_xp(message.author.id, message.guild.id, xp, message.channel, bot.db_pool)
         else:
-            print("db_pool이 아직 준비되지 않았습니다. 다시 시도해주세요.")
+            # db_pool 없으면 로그만 남기고 스킵 (크래시 방지)
+            print("db_pool이 아직 준비되지 않았습니다. XP 추가 스킵.")
     await bot.process_commands(message)
 
 # 레벨 확인 명령어
+interaction_cooldowns = {}  # 전역 딕셔너리 (스크립트 상단에 추가)
+
+async def check_interaction_cooldown(user_id, cooldown_seconds=5.0):
+    now = datetime.utcnow()
+    last_use = interaction_cooldowns.get(user_id)
+    if last_use and (now - last_use).total_seconds() < cooldown_seconds:
+        return False, cooldown_seconds - (now - last_use).total_seconds()
+    interaction_cooldowns[user_id] = now
+    return True, 0
+
 @bot.tree.command(name="레벨", description="현재 레벨과 경험치를 확인해!")
 async def level(interaction: discord.Interaction, member: discord.Member = None):
-    bucket = cooldown.get_bucket(interaction)
-    retry_after = bucket.update_rate_limit()
-    if retry_after:
-        await send_message_with_retry(interaction, f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
+    can_proceed, retry_after = await check_interaction_cooldown(interaction.user.id)
+    if not can_proceed:
+        await interaction.response.send_message(f"{retry_after:.1f}초 후에 다시 시도해주세요!", ephemeral=True)
         return
 
     await interaction.response.defer()
@@ -160,10 +158,10 @@ async def level(interaction: discord.Interaction, member: discord.Member = None)
             member.id, interaction.guild.id
         )
         if row is None:
-            await send_message_with_retry(interaction, f'{member.display_name}님은 아직 경험치가 없어요!')
+            await interaction.followup.send(f'{member.display_name}님은 아직 경험치가 없어요!')
         else:
             xp, level = row['xp'], row['level']
-            await send_message_with_retry(interaction, f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
+            await interaction.followup.send(f'{member.display_name}님은 현재 레벨 {level}이고, 경험치는 {xp}/{get_level_xp(level)}이에요!')
 
 # 리더보드 명령어
 @bot.tree.command(name="리더보드", description="서버의 상위 5명 레벨 랭킹을 확인해!")
@@ -481,21 +479,22 @@ def validate_all(answers):
     errors = []
     race = answers.get("종족")
     attributes = []
-    for attr in ["체력", "지능", "이동속도", "힘", "냉철"]:
+    attr_fields = ["체력", "지능", "이동속도", "힘", "냉철"]
+    for attr in attr_fields:
         try:
             value = int(answers.get(attr, 0))
             attributes.append(value)
         except (ValueError, TypeError):
-            errors.append(([attr], f"{attr}은 숫자여야 합니다."))
+            errors.append((attr_fields, f"{attr}은 숫자여야 합니다."))
     attr_sum = sum(attributes)
     if race == "인간" and not (5 <= attr_sum <= 18):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "인간의 속성 합계는 5~18이어야 합니다."))
+        errors.append((attr_fields, "인간의 속성 합계는 5~18이어야 합니다."))
     elif race == "마법사" and not (5 <= attr_sum <= 19):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "마법사의 속성 합계는 5~19이어야 합니다."))
+        errors.append((attr_fields, "마법사의 속성 합계는 5~19이어야 합니다."))
     elif race == "요괴" and not (5 <= attr_sum <= 20):
-        errors.append((["체력", "지능", "이동속도", "힘", "냉철"], "요괴의 속성 합계는 5~20이어야 합니다."))
+        errors.append((attr_fields, "요괴의 속성 합계는 5~20이어야 합니다."))
 
-    tech_count = sum(1 for field in answers if field.startswith("사용 기술/마법/요력_"))
+    tech_count = sum(1 for field in answers if re.match(r"사용 기술/마법/요력_\d+", field))
     if tech_count > 6:
         errors.append((["사용 기술/마법/요력"], f"기술/마법/요력은 최대 6개까지 가능합니다. 현재 {tech_count}개."))
 
@@ -604,29 +603,26 @@ async def queue_flex_task(character_id, description, user_id, channel_id, thread
     return task_id
 
 # 429 에러 재시도 로직
-async def send_message_with_retry(interaction_or_channel, content=None, max_retries=3, ephemeral=False, view=None, files=None, embed=None, is_interaction=False):
+async def send_message_with_retry(target, content=None, max_retries=3, ephemeral=False, view=None, files=None, embed=None, is_interaction=False):
     for attempt in range(max_retries):
         try:
-            if is_interaction and isinstance(interaction_or_channel, discord.Interaction):
-                if interaction_or_channel.response.is_done():
-                    await interaction_or_channel.followup.send(content, ephemeral=ephemeral, view=view, files=files, embed=embed)
+            if is_interaction and isinstance(target, discord.Interaction):
+                if target.response.is_done():
+                    await target.followup.send(content=content, ephemeral=ephemeral, view=view, files=files or [], embed=embed)
                 else:
-                    await interaction_or_channel.response.send_message(content, ephemeral=ephemeral, view=view, files=files, embed=embed)
+                    await target.response.send_message(content=content, ephemeral=ephemeral, view=view, files=files or [], embed=embed)
             else:
-                await interaction_or_channel.send(content, view=view, files=files, embed=embed)
+                await target.send(content=content, view=view, files=files or [], embed=embed)
             return
         except discord.HTTPException as e:
             if e.status == 429:
-                retry_after = getattr(e, 'retry_after', 5.0)
-                print(f"429 Rate Limit Error, retrying after {retry_after} seconds...")
+                retry_after = e.retry_after or 5.0
                 await asyncio.sleep(retry_after)
             else:
-                print(f"Error in send_message_with_retry: {str(e)}")
                 raise
         except Exception as e:
-            print(f"Unexpected error in send_message_with_retry: {str(e)}")
             raise
-    raise discord.HTTPException(response=None, message="최대 재시도 횟수 초과")
+    print("최대 재시도 횟수 초과 - 메시지 전송 실패")
 
 # Flex 작업 처리
 async def process_flex_queue():
@@ -643,12 +639,26 @@ async def process_flex_queue():
             response = openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[{"role": "user", "content": task["prompt"]}],
-                max_tokens=50
+                max_tokens=150  # 증가로 완전 응답 확보
             )
             result = response.choices[0].message.content.strip()
             pass_status = result.startswith("✅")
-            role_name = result.split("역할: ")[1] if pass_status and "역할: " in result else None
-            reason = result[2:] if not pass_status else "통과"
+            role_name = result.split("역할: ")[1].strip("]") if pass_status and "역할: " in result else None
+            reason = result[2:].strip() if not pass_status else "통과"
+
+            # ... (나머지 로직 동일, 포럼/텍스트 채널 구분 부분은 원본 유지)
+
+            task["status"] = "completed"
+        except Exception as e:
+            print(f"Error processing flex task: {str(e)}")
+            channel = bot.get_channel(int(task["channel_id"]))
+            await send_message_with_retry(channel, f"❌ 오류야! {str(e)} 다시 시도해~ 🥹")
+            task["status"] = "failed"
+            # 재시도 로직 추가 (필요 시)
+            if "rate limit" in str(e).lower():
+                flex_queue.append(task_id)  # 큐 재추가
+                await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
             answers = {}
             for line in task["description"].split("\n"):
