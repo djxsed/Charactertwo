@@ -660,7 +660,7 @@ async def process_flex_queue():
                 await asyncio.sleep(5)
         await asyncio.sleep(1)
 
-            answers = {}
+        answers = {}
             for line in task["description"].split("\n"):
                 if ": " in line:
                     key, value = line.split(": ", 1)
